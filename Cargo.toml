@@ -1,0 +1,3 @@
+[workspace]
+members = ["peoxide-core", "peoxide-py"]
+resolver = "3"
