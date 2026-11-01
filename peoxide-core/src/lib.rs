@@ -53,17 +53,21 @@ pub fn parse(data: &[u8]) -> Result<Headers, goblin::error::Error> {
 #[cfg(test)]
 mod tests {
     use crate::parse;
+    use goblin::pe::header::{COFF_MACHINE_X86_64, DOS_MAGIC, PE_MAGIC};
+
+    const KERNEL32: &str = r"C:\Windows\System32\kernel32.dll";
 
     #[test]
 
     fn parses_kernel32_dos_header() {
-        let data = std::fs::read(r"C:\Windows\System32\kernel32.dll").unwrap();
+        let data = std::fs::read(KERNEL32).unwrap();
         
         let headers = parse(&data).unwrap();
         let off = headers.dos_header.e_lfanew as usize;
-        assert_eq!(headers.dos_header.e_magic, 0x5A4D);
+        assert_eq!(headers.dos_header.e_magic, DOS_MAGIC);
         assert_eq!(&data[off..off + 4], b"PE\0\0");
-        assert_eq!(headers.file_header.machine, 0x8664);
+        assert_eq!(headers.file_header.machine, COFF_MACHINE_X86_64);
+        assert_eq!(headers.signature, PE_MAGIC);
     }
     
 }
