@@ -23,8 +23,8 @@ mod peoxide {
             let core = peoxide_core::parse(&data).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
             Ok(PE {
                 dos_header: DosHeader {
-                    e_magic: core.e_magic,
-                    e_lfanew: core.e_lfanew,
+                    e_magic: core.dos_header.e_magic,
+                    e_lfanew: core.dos_header.e_lfanew,
                 }
             })
             
