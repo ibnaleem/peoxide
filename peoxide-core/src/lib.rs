@@ -41,8 +41,8 @@ pub fn parse(data: &[u8]) -> Result<Headers, goblin::error::Error> {
     };
 
     Ok(Headers {
-        signature: headers.signature,
         dos_header,
+        signature: headers.signature,
         file_header,
         optional_header,
     })
