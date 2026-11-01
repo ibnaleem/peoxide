@@ -14,4 +14,4 @@ classifiers = [
 dynamic = ["version"]
 
 [tool.maturin]
-manifest-path = "peoxide/Cargo.toml"
+manifest-path = "peoxide-py/Cargo.toml"
