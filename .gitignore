@@ -22,3 +22,49 @@ rustc-ice-*.txt
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+
+# Claude Code
+CLAUDE.md
+AGENTS.md
+.claude/
+.claude.*
+.mcp.*
+
+
+# OpenClaw workspace files
+openclaw.*
+openclaw
+.openclaw/
+.openclaw.*
+BOOTSTRAP.md
+HEARTBEAT.md
+IDENTITY.md
+USER.md
+TOOLS.md
+SOUL.md
+AGENTS.md
+MEMORY.md
+
+
+# other ai
+.trail/
+.serena/
+opencode.json
+.remember/
+.hermes/
+.agents/
+.graft/
+.headroom/
+.ollama/
+.omp/
+.cursor/
+.copilot/
+.ghcp-appmod/
+.cagent/
+.firecrawl/
+skills-lock.json
+.gateguard/
