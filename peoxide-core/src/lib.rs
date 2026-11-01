@@ -14,8 +14,8 @@ pub struct OptionalHeader {
 }
 
 pub struct Headers {
-    pub signature : u32,
     pub dos_header: DosHeader,
+    pub signature : u32,
     pub file_header: FileHeader,
     pub optional_header: OptionalHeader,
 }
