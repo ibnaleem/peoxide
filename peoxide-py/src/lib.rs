@@ -5,9 +5,30 @@ use pyo3::prelude::*;
 mod peoxide {
     use pyo3::prelude::*;
 
-    /// Formats the sum of two numbers as string.
-    #[pyfunction]
-    fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
-        Ok((a + b).to_string())
+    #[pyclass(frozen, get_all, skip_from_py_object)] // frozen = read-only, get_all = a getter per field
+    #[derive(Clone)]
+    struct DosHeader { e_magic: u16, e_lfanew: u32 }
+
+    #[pyclass(frozen)]
+    struct PE {
+        #[pyo3(get, name= "DOS_HEADER")]
+        dos_header: DosHeader,
     }
+
+    #[pymethods]
+    impl PE {
+        #[new]
+        fn new(path: &str) -> PyResult<Self> {
+            let data = std::fs::read(path)?;
+            let core = peoxide_core::parse(&data).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            Ok(PE {
+                dos_header: DosHeader {
+                    e_magic: core.e_magic,
+                    e_lfanew: core.e_lfanew,
+                }
+            })
+            
+        }
+    }
+
 }
