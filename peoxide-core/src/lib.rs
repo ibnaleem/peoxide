@@ -6,6 +6,11 @@ pub struct DosHeader {
 pub struct FileHeader {
     pub machine: u16,
     pub number_of_sections: u16,
+    pub time_date_stamp: u32,
+    pub pointer_to_symbol_table: u32,
+    pub number_of_symbols: u32,
+    pub size_of_optional_header: u16,
+    pub characteristics: u16,
 }
 
 pub struct OptionalHeader {
@@ -31,6 +36,11 @@ pub fn parse(data: &[u8]) -> Result<Headers, goblin::error::Error> {
     let file_header = FileHeader {
         machine: headers.coff_header.machine,
         number_of_sections: headers.coff_header.number_of_sections,
+        time_date_stamp: headers.coff_header.time_date_stamp,
+        pointer_to_symbol_table: headers.coff_header.pointer_to_symbol_table,
+        number_of_symbols: headers.coff_header.number_of_symbol_table,
+        size_of_optional_header: headers.coff_header.size_of_optional_header,
+        characteristics: headers.coff_header.characteristics,
     };
 
     let opt = headers.optional_header.ok_or_else(|| goblin::error::Error::Malformed("missing optional header".into()))?;
