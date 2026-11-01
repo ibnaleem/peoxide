@@ -58,8 +58,7 @@ mod tests {
     const KERNEL32: &str = r"C:\Windows\System32\kernel32.dll";
 
     #[test]
-
-    fn parses_kernel32_dos_header() {
+    fn parses_kernel32_headers() {
         let data = std::fs::read(KERNEL32).unwrap();
         
         let headers = parse(&data).unwrap();
