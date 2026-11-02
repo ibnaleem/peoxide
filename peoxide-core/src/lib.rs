@@ -92,9 +92,12 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
     let headers = headers::from_goblin(&pe.header)?;
     let imports = imports(&pe, headers.optional_header.image_base);
     let exports = exports(data, &pe, headers.optional_header.file_alignment, &opts);
+    let mut sections = pe.sections;
+    // pefile orders sections by VirtualAddress, not by section-table position.
+    sections.sort_by_key(|s| s.virtual_address);
     Ok(Pe {
         headers,
-        sections: pe.sections,
+        sections,
         imports,
         exports,
     })
