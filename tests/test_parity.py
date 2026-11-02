@@ -14,6 +14,7 @@ CORPUS = [
     WINDIR / "System32" / "ntdll.dll",
     WINDIR / "System32" / "user32.dll",
     WINDIR / "System32" / "notepad.exe",
+    WINDIR / "System32" / "drivers" / "ntfs.sys",
     WINDIR / "SysWOW64" / "kernel32.dll",
 ]
 CORPUS = [p for p in CORPUS if p.exists()]
@@ -149,6 +150,15 @@ def test_flags(pair):
     assert_fields_match(ours.OPTIONAL_HEADER, theirs.OPTIONAL_HEADER, DLL_FLAGS)
     for mine, ref in zip(ours.sections, theirs.sections):
         assert_fields_match(mine, ref, SECTION_FLAGS)
+
+
+def test_classification(pair):
+    ours, theirs = pair
+    assert (ours.is_exe(), ours.is_dll(), ours.is_driver()) == (
+        theirs.is_exe(),
+        theirs.is_dll(),
+        theirs.is_driver(),
+    )
 
 
 def test_unknown_attribute_raises(pair):
