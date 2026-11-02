@@ -21,7 +21,10 @@ DIRECTORIES = [
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DEBUG"],
 ]
+DEBUG_FIELDS = ["Characteristics", "TimeDateStamp", "Type", "SizeOfData", "PointerToRawData"]
+CODEVIEW_FIELDS = ["Signature_String", "Age", "PdbFileName", "CvHeaderSignature", "Signature"]
 
 
 def summarize(pe, export_limit=None):
@@ -96,6 +99,14 @@ def details(pe, rvas, offsets):
                 ],
             )
             for d in getattr(pe, "DIRECTORY_ENTRY_DELAY_IMPORT", [])
+        ],
+        "debug": [
+            (
+                [getattr(d.struct, f) for f in DEBUG_FIELDS],
+                [getattr(d.entry, f, None) for f in CODEVIEW_FIELDS] if d.entry else None,
+            )
+            for d in getattr(pe, "DIRECTORY_ENTRY_DEBUG", [])
+            if d.struct.Type != 4
         ],
     }
 
