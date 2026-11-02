@@ -26,11 +26,6 @@ macro_rules! int_struct {
     };
 }
 
-int_struct!(DosHeader from peoxide_core::DosHeader {
-    e_magic: u16 = e_magic,
-    e_lfanew: u32 = e_lfanew,
-});
-
 int_struct!(NtHeaders from peoxide_core::Headers {
     Signature: u32 = signature,
 });
@@ -80,6 +75,55 @@ int_struct!(OptionalHeader from peoxide_core::OptionalHeader {
 
 fn bytes(py: Python<'_>, b: &[u8]) -> Py<PyBytes> {
     PyBytes::new(py, b).unbind()
+}
+
+#[pyclass(frozen, get_all, module = "peoxide")]
+struct DosHeader {
+    e_magic: u16,
+    e_cblp: u16,
+    e_cp: u16,
+    e_crlc: u16,
+    e_cparhdr: u16,
+    e_minalloc: u16,
+    e_maxalloc: u16,
+    e_ss: u16,
+    e_sp: u16,
+    e_csum: u16,
+    e_ip: u16,
+    e_cs: u16,
+    e_lfarlc: u16,
+    e_ovno: u16,
+    e_res: Py<PyBytes>,
+    e_oemid: u16,
+    e_oeminfo: u16,
+    e_res2: Py<PyBytes>,
+    e_lfanew: u32,
+}
+
+impl DosHeader {
+    fn new(py: Python<'_>, d: &peoxide_core::DosHeader) -> Self {
+        DosHeader {
+            e_magic: d.e_magic,
+            e_cblp: d.e_cblp,
+            e_cp: d.e_cp,
+            e_crlc: d.e_crlc,
+            e_cparhdr: d.e_cparhdr,
+            e_minalloc: d.e_minalloc,
+            e_maxalloc: d.e_maxalloc,
+            e_ss: d.e_ss,
+            e_sp: d.e_sp,
+            e_csum: d.e_csum,
+            e_ip: d.e_ip,
+            e_cs: d.e_cs,
+            e_lfarlc: d.e_lfarlc,
+            e_ovno: d.e_ovno,
+            e_res: bytes(py, &d.e_res),
+            e_oemid: d.e_oemid,
+            e_oeminfo: d.e_oeminfo,
+            e_res2: bytes(py, &d.e_res2),
+            e_lfanew: d.e_lfanew,
+        }
+    }
 }
 
 #[pyclass(frozen, get_all, module = "peoxide")]
@@ -216,7 +260,7 @@ impl PE {
         });
 
         Ok(PE {
-            DOS_HEADER: Py::new(py, DosHeader::from(&h.dos_header))?,
+            DOS_HEADER: Py::new(py, DosHeader::new(py, &h.dos_header))?,
             NT_HEADERS: Py::new(py, NtHeaders::from(h))?,
             FILE_HEADER: Py::new(py, FileHeader::from(&h.file_header))?,
             OPTIONAL_HEADER: Py::new(py, OptionalHeader::from(&h.optional_header))?,
