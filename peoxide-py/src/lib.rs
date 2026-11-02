@@ -359,6 +359,14 @@ impl DebugData {
     }
 }
 
+py_class!(RichHeader from peoxide_core::RichHeader as (py, c) {
+    checksum: u32 = c.checksum,
+    values: Py<PyList> = PyList::new(py, &c.values)?.unbind(),
+    key: Py<PyBytes> = bytes(py, &c.key),
+    raw_data: Py<PyBytes> = bytes(py, &c.raw_data),
+    clear_data: Py<PyBytes> = bytes(py, &c.clear_data),
+});
+
 type Flags = &'static [(&'static str, u32)];
 
 /// pefile's flag tables: each name reads as `bool(field & mask)`.
@@ -590,6 +598,8 @@ struct PE {
     DIRECTORY_ENTRY_DELAY_IMPORT: Py<PyList>,
     #[pyo3(get)]
     DIRECTORY_ENTRY_DEBUG: Py<PyList>,
+    #[pyo3(get)]
+    RICH_HEADER: Option<Py<RichHeader>>,
     pe: peoxide_core::Pe,
     data: Py<PyBytes>,
 }
@@ -634,6 +644,11 @@ impl PE {
             DIRECTORY_ENTRY_EXPORT: Py::new(py, ExportDirData::new(py, &pe.exports)?)?,
             DIRECTORY_ENTRY_DELAY_IMPORT: list(py, &pe.delay_imports, ImportDescData::new)?,
             DIRECTORY_ENTRY_DEBUG: list(py, &pe.debug, DebugData::new)?,
+            RICH_HEADER: pe
+                .rich_header
+                .as_ref()
+                .map(|r| Py::new(py, RichHeader::new(py, r)?))
+                .transpose()?,
             pe,
             data: data.unbind(),
         })
@@ -712,6 +727,14 @@ impl PE {
     fn get_exphash(&self, py: Python<'_>, algorithm: &str) -> PyResult<String> {
         self.pe.exphash_input().map_or(Ok(String::new()), |input| {
             hexdigest(py, algorithm, input.as_bytes())
+        })
+    }
+
+    /// A hash of `RICH_HEADER.clear_data`, or `""` when the file has no Rich header.
+    #[pyo3(signature = (algorithm="md5"))]
+    fn get_rich_header_hash(&self, py: Python<'_>, algorithm: &str) -> PyResult<String> {
+        self.pe.rich_header.as_ref().map_or(Ok(String::new()), |r| {
+            hexdigest(py, algorithm, &r.clear_data)
         })
     }
 
