@@ -287,6 +287,29 @@ def test_imports(pair):
                 assert a.hint == b.hint
 
 
+def import_entries(entries):
+    return [
+        (
+            d.dll,
+            [
+                (None if i.import_by_ordinal else i.name, i.ordinal, i.hint, i.address)
+                for i in d.imports
+            ],
+        )
+        for d in entries
+    ]
+
+
+def test_delay_imports(pair):
+    ours, theirs = pair
+    expected = getattr(theirs, "DIRECTORY_ENTRY_DELAY_IMPORT", [])
+    assert import_entries(ours.DIRECTORY_ENTRY_DELAY_IMPORT) == import_entries(expected)
+
+
+def test_corpus_has_delay_imports():
+    assert any(peoxide.PE(str(p)).DIRECTORY_ENTRY_DELAY_IMPORT for p in CORPUS)
+
+
 def test_exports(pair):
     ours, theirs = pair
     export_dir = getattr(theirs, "DIRECTORY_ENTRY_EXPORT", None)
