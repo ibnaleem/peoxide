@@ -255,6 +255,21 @@ def test_appended_data_is_overlay():
     assert ours.get_overlay().endswith(b"appended overlay")
 
 
+def test_imphash_and_exphash(pair):
+    ours, theirs = pair
+    assert ours.get_imphash() == theirs.get_imphash()
+    assert ours.get_exphash() == theirs.get_exphash()
+
+
+def test_hash_algorithm_is_selectable():
+    pe = peoxide.PE(str(CORPUS[0]))
+    assert len(pe.get_imphash("sha256")) == 64
+    assert pe.get_imphash("sha256") != pe.get_imphash()
+    assert len(pe.get_exphash("sha256")) == 64
+    with pytest.raises(ValueError):
+        pe.get_imphash("not-a-hash")
+
+
 def test_imports(pair):
     ours, theirs = pair
     expected = getattr(theirs, "DIRECTORY_ENTRY_IMPORT", [])
