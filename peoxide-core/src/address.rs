@@ -2,7 +2,8 @@
 //!
 //! Offsets are `i64` because pefile's arithmetic is unbounded Python integers: a start RVA
 //! below a section's address yields a negative offset, which `clamp` turns into an empty or
-//! truncated range instead of wrapping.
+//! truncated range instead of wrapping. File fields are `u32`, so only caller-supplied values
+//! can reach the ends of `i64`; arithmetic that mixes them in saturates.
 
 use std::ops::Range;
 
@@ -38,9 +39,9 @@ impl SectionLayout {
         ignore_padding: bool,
     ) -> (i64, i64) {
         let offset = start.map_or(self.pointer_to_raw_data, |rva| self.offset_from_rva(rva));
-        let end = offset + length.unwrap_or(section.size_of_raw_data as i64);
+        let end = offset.saturating_add(length.unwrap_or(section.size_of_raw_data as i64));
         let end = if ignore_padding {
-            end.min(offset + section.virtual_size as i64)
+            end.min(offset.saturating_add(section.virtual_size as i64))
         } else {
             end
         };
@@ -58,11 +59,14 @@ impl SectionLayout {
     }
 
     pub fn offset_from_rva(&self, rva: i64) -> i64 {
-        rva - self.virtual_address + self.pointer_to_raw_data
+        rva.saturating_sub(self.virtual_address)
+            .saturating_add(self.pointer_to_raw_data)
     }
 
     pub fn rva_from_offset(&self, offset: i64) -> i64 {
-        offset - self.pointer_to_raw_data + self.virtual_address
+        offset
+            .saturating_sub(self.pointer_to_raw_data)
+            .saturating_add(self.virtual_address)
     }
 }
 
@@ -242,7 +246,7 @@ impl Pe {
             let range = self.layouts[i].data_range(&self.sections[i], Some(rva), length, false);
             return Some(clamp(range, self.file_size));
         }
-        let end = length.map_or(i64::MAX, |length| rva + length);
+        let end = length.map_or(i64::MAX, |length| rva.saturating_add(length));
         if rva < self.header_size {
             return Some(clamp((rva, end.min(self.header_size)), self.file_size));
         }
