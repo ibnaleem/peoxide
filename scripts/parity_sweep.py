@@ -50,16 +50,32 @@ def summarize(pe, export_limit=None):
     }
 
 
+DOS_FIELDS = [entry.split(",")[1] for entry in pefile.PE.__IMAGE_DOS_HEADER_format__[1]]
+
+
+def details(pe):
+    """Fields checked by the sweep but not read inside the benchmark timer."""
+    return {
+        "dos header": [getattr(pe.DOS_HEADER, field) for field in DOS_FIELDS],
+        "data directories": [
+            (d.name, d.VirtualAddress, d.Size) for d in pe.OPTIONAL_HEADER.DATA_DIRECTORY
+        ],
+        "classification": (pe.is_exe(), pe.is_dll(), pe.is_driver()),
+    }
+
+
 def differences(ours, reference):
     """Names of the summary parts where a peoxide.PE and a pefile.PE disagree."""
-    theirs_summary = summarize(reference)
+    theirs_summary = summarize(reference) | details(reference)
     capped = any("Assuming corrupt" in w for w in reference.get_warnings())
-    ours_summary = summarize(ours, len(theirs_summary["exports"]) if capped else None)
+    ours_summary = summarize(ours, len(theirs_summary["exports"]) if capped else None) | details(ours)
     return [key for key in ours_summary if ours_summary[key] != theirs_summary[key]]
 
 
 def main(folder):
-    files = sorted(p for p in Path(folder).iterdir() if p.suffix.lower() in {".dll", ".exe"})
+    files = sorted(
+        p for p in Path(folder).iterdir() if p.suffix.lower() in {".dll", ".exe", ".sys"}
+    )
     outcomes = Counter()
     examples = {}
     for path in files:
