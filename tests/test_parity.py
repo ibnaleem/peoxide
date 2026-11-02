@@ -359,6 +359,41 @@ def test_corpus_has_codeview_records():
     assert "CvInfoPdb70" in kinds
 
 
+RICH_FIELDS = ["checksum", "values", "key", "raw_data", "clear_data"]
+
+
+def rich_header(pe):
+    rich = getattr(pe, "RICH_HEADER", None)
+    return rich and [getattr(rich, f) for f in RICH_FIELDS]
+
+
+def test_rich_header(pair):
+    ours, theirs = pair
+    assert rich_header(ours) == rich_header(theirs)
+    for algorithm in ("md5", "sha256"):
+        assert ours.get_rich_header_hash(algorithm) == theirs.get_rich_header_hash(algorithm)
+
+
+def test_corpus_has_rich_headers():
+    assert any(peoxide.PE(str(p)).RICH_HEADER for p in CORPUS)
+
+
+def relocations(pe):
+    return [
+        (b.struct.VirtualAddress, b.struct.SizeOfBlock, [(e.type, e.rva, e.base_rva) for e in b.entries])
+        for b in getattr(pe, "DIRECTORY_ENTRY_BASERELOC", [])
+    ]
+
+
+def test_relocations(pair):
+    ours, theirs = pair
+    assert relocations(ours) == relocations(theirs)
+
+
+def test_corpus_has_relocations():
+    assert any(peoxide.PE(str(p)).DIRECTORY_ENTRY_BASERELOC for p in CORPUS)
+
+
 def test_exports(pair):
     ours, theirs = pair
     export_dir = getattr(theirs, "DIRECTORY_ENTRY_EXPORT", None)

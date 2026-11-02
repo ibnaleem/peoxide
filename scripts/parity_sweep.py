@@ -22,6 +22,7 @@ DIRECTORIES = [
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DEBUG"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BASERELOC"],
 ]
 DEBUG_FIELDS = ["Characteristics", "TimeDateStamp", "Type", "SizeOfData", "PointerToRawData"]
 CODEVIEW_FIELDS = ["Signature_String", "Age", "PdbFileName", "CvHeaderSignature", "Signature"]
@@ -108,7 +109,23 @@ def details(pe, rvas, offsets):
             for d in getattr(pe, "DIRECTORY_ENTRY_DEBUG", [])
             if d.struct.Type != 4
         ],
+        "relocations": [
+            (b.struct.VirtualAddress, b.struct.SizeOfBlock, [(e.type, e.rva) for e in b.entries])
+            for b in getattr(pe, "DIRECTORY_ENTRY_BASERELOC", [])
+        ],
+        "rich header": rich_header(pe),
     }
+
+
+RICH_FIELDS = ["checksum", "values", "key", "raw_data", "clear_data"]
+
+
+def rich_header(pe):
+    """fast_load skips pefile's Rich header, so ask its parser directly."""
+    if isinstance(pe, pefile.PE):
+        rich = pe.parse_rich_header()
+        return rich and [rich[f] for f in RICH_FIELDS]
+    return pe.RICH_HEADER and [getattr(pe.RICH_HEADER, f) for f in RICH_FIELDS]
 
 
 def differences(ours, reference):

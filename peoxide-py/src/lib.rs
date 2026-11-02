@@ -3,6 +3,7 @@
 use pyo3::create_exception;
 use pyo3::exceptions::{PyAttributeError, PyException, PyTypeError};
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyList};
 
 create_exception!(
@@ -359,6 +360,37 @@ impl DebugData {
     }
 }
 
+py_class!(RichHeader from peoxide_core::RichHeader as (py, c) {
+    checksum: u32 = c.checksum,
+    values: Py<PyList> = PyList::new(py, &c.values)?.unbind(),
+    key: Py<PyBytes> = bytes(py, &c.key),
+    raw_data: Py<PyBytes> = bytes(py, &c.raw_data),
+    clear_data: Py<PyBytes> = bytes(py, &c.clear_data),
+});
+
+py_class!(BaseRelocation from peoxide_core::RelocationBlock as (py, c) {
+    VirtualAddress: u32 = c.virtual_address,
+    SizeOfBlock: u32 = c.size_of_block,
+});
+
+#[pyclass(frozen, get_all, module = "peoxide")]
+struct RelocationData {
+    r#type: u16,
+    rva: u64,
+    base_rva: u32,
+}
+
+py_class!(BaseRelocationData from peoxide_core::RelocationBlock as (py, c) {
+    r#struct: Py<BaseRelocation> = Py::new(py, BaseRelocation::new(py, c)?)?,
+    entries: Py<PyList> = PyList::new(
+        py,
+        c.entries
+            .iter()
+            .map(|e| RelocationData { r#type: e.reloc_type, rva: e.rva, base_rva: c.virtual_address }),
+    )?
+    .unbind(),
+});
+
 type Flags = &'static [(&'static str, u32)];
 
 /// pefile's flag tables: each name reads as `bool(field & mask)`.
@@ -590,6 +622,10 @@ struct PE {
     DIRECTORY_ENTRY_DELAY_IMPORT: Py<PyList>,
     #[pyo3(get)]
     DIRECTORY_ENTRY_DEBUG: Py<PyList>,
+    #[pyo3(get)]
+    RICH_HEADER: Option<Py<RichHeader>>,
+    /// Built on first access: relocation lists run to tens of thousands of entries.
+    relocations: PyOnceLock<Py<PyList>>,
     pe: peoxide_core::Pe,
     data: Py<PyBytes>,
 }
@@ -634,6 +670,12 @@ impl PE {
             DIRECTORY_ENTRY_EXPORT: Py::new(py, ExportDirData::new(py, &pe.exports)?)?,
             DIRECTORY_ENTRY_DELAY_IMPORT: list(py, &pe.delay_imports, ImportDescData::new)?,
             DIRECTORY_ENTRY_DEBUG: list(py, &pe.debug, DebugData::new)?,
+            RICH_HEADER: pe
+                .rich_header
+                .as_ref()
+                .map(|r| Py::new(py, RichHeader::new(py, r)?))
+                .transpose()?,
+            relocations: PyOnceLock::new(),
             pe,
             data: data.unbind(),
         })
@@ -713,6 +755,24 @@ impl PE {
         self.pe.exphash_input().map_or(Ok(String::new()), |input| {
             hexdigest(py, algorithm, input.as_bytes())
         })
+    }
+
+    /// A hash of `RICH_HEADER.clear_data`, or `""` when the file has no Rich header.
+    #[pyo3(signature = (algorithm="md5"))]
+    fn get_rich_header_hash(&self, py: Python<'_>, algorithm: &str) -> PyResult<String> {
+        self.pe.rich_header.as_ref().map_or(Ok(String::new()), |r| {
+            hexdigest(py, algorithm, &r.clear_data)
+        })
+    }
+
+    /// Base relocation blocks, empty when the file has none.
+    #[getter]
+    fn DIRECTORY_ENTRY_BASERELOC(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
+        self.relocations
+            .get_or_try_init(py, || {
+                list(py, &self.pe.relocations, BaseRelocationData::new)
+            })
+            .map(|l| l.clone_ref(py))
     }
 
     /// True for a standard executable: not a DLL, not a driver, and marked executable.
