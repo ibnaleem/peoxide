@@ -67,6 +67,7 @@ Everything is parsed up front, and every attribute below is read-only.
 | `sections` | List of sections with `Name` (8 raw bytes), `Misc_VirtualSize`, `VirtualAddress`, `SizeOfRawData`, `PointerToRawData`, `PointerToRelocations`, `PointerToLinenumbers`, `NumberOfRelocations`, `NumberOfLinenumbers`, `Characteristics` |
 | `DIRECTORY_ENTRY_IMPORT` | List of imported DLLs, each with `dll` (bytes) and `imports`. Each import has `name` (bytes or `None`), `hint`, `ordinal`, `import_by_ordinal` and `address` (the IAT slot's virtual address). |
 | `DIRECTORY_ENTRY_DELAY_IMPORT` | Delay-loaded DLLs, in the same shape as `DIRECTORY_ENTRY_IMPORT`. Empty when the file has none. |
+| `DIRECTORY_ENTRY_DEBUG` | Debug records, each with `struct` (`Characteristics`, `TimeDateStamp`, `MajorVersion`, `MinorVersion`, `Type`, `SizeOfData`, `AddressOfRawData`, `PointerToRawData`) and `entry`. CodeView records decode to `entry.PdbFileName`, `entry.Age`, the GUID fields and pefile's `entry.Signature_String`, and type 20 decodes to `entry.ExDllCharacteristics` with its `IMAGE_DLLCHARACTERISTICS_EX_*` flags. Other types have `entry` set to `None`. |
 | `DIRECTORY_ENTRY_EXPORT` | Has `symbols`, a list where each symbol has `name` (bytes or `None`), `ordinal`, `address` (RVA) and `forwarder` (bytes or `None`). |
 
 Flags read as booleans, as in pefile. `FILE_HEADER.IMAGE_FILE_DLL`,
@@ -120,7 +121,8 @@ the two disagree in these cases:
 - **Files with no imports or exports.** pefile leaves `DIRECTORY_ENTRY_IMPORT` and `DIRECTORY_ENTRY_EXPORT` undefined. peoxide always defines them, as an empty list and an object with an empty `symbols` list, so loops work without a `hasattr` check.
 - **Section reads that start before the section.** `section.get_data(start)` with `start` below the section's address gives pefile a negative offset, which Python treats as counting from the end of the file. peoxide clamps it to the start of the file instead.
 - **Corrupt delay-import thunk tables.** pefile gives up on a thunk table that repeats one address 15 times or spreads its addresses over more than 128 MB. peoxide does not apply those two heuristics, so on such a table it may return entries where pefile returns none.
-- **Scope.** peoxide does not parse resources, the Rich header, relocations or debug data, and it cannot modify or write PE files.
+- **IMAGE_DEBUG_TYPE_MISC records.** pefile decodes these pre-PDB debug records. peoxide leaves their `entry` as `None`.
+- **Scope.** peoxide does not parse resources, the Rich header or relocations, and it cannot modify or write PE files.
 
 ## Correctness
 
