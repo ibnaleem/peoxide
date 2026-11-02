@@ -32,6 +32,10 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test
+      - name: Python tests (parity with pefile, malformed input)
+        run: |
+          pip install . pefile pytest
+          pytest -q tests
 
   linux:
     runs-on: ${{ matrix.platform.runner }}
