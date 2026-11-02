@@ -1,5 +1,6 @@
 mod headers;
 pub use goblin::error::Error;
+pub use goblin::pe::data_directories::DataDirectory;
 pub use goblin::pe::section_table::SectionTable as Section;
 pub use headers::*;
 
@@ -164,6 +165,8 @@ mod tests {
             goblin::pe::optional_header::MAGIC_64
         );
         assert!(headers.optional_header.base_of_data.is_none());
+        assert_eq!(headers.optional_header.data_directory.len(), 16);
+        assert!(headers.optional_header.data_directory[0].virtual_address != 0);
 
         assert_eq!(
             pe.sections.len(),

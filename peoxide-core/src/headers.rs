@@ -65,6 +65,8 @@ pub struct OptionalHeader {
     pub size_of_heap_commit: u64,
     pub loader_flags: u32,
     pub number_of_rva_and_sizes: u32,
+    /// One entry per `number_of_rva_and_sizes`; unused directories are zero.
+    pub data_directory: Vec<goblin::pe::data_directories::DataDirectory>,
 }
 
 pub struct Headers {
@@ -156,6 +158,13 @@ pub(crate) fn from_goblin(
         size_of_heap_commit: opt.windows_fields.size_of_heap_commit,
         loader_flags: opt.windows_fields.loader_flags,
         number_of_rva_and_sizes: opt.windows_fields.number_of_rva_and_sizes,
+        data_directory: opt
+            .data_directories
+            .data_directories
+            .iter()
+            .take(opt.windows_fields.number_of_rva_and_sizes as usize)
+            .map(|entry| entry.map(|(_, dir)| dir).unwrap_or_default())
+            .collect(),
     };
 
     Ok(Headers {
