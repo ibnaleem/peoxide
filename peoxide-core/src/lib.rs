@@ -54,8 +54,11 @@ impl Pe {
     }
 
     /// pefile's heuristic: imports a kernel DLL, or has a PAGE/PAGED section and a native
-    /// subsystem.
+    /// subsystem. An image with no imports is never a driver, as in pefile.
     pub fn is_driver(&self) -> bool {
+        if self.imports.is_empty() {
+            return false;
+        }
         let imports_kernel = self
             .imports
             .iter()
