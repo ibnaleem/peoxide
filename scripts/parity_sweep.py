@@ -50,6 +50,14 @@ def summarize(pe, export_limit=None):
     }
 
 
+def differences(ours, reference):
+    """Names of the summary parts where a peoxide.PE and a pefile.PE disagree."""
+    theirs_summary = summarize(reference)
+    capped = any("Assuming corrupt" in w for w in reference.get_warnings())
+    ours_summary = summarize(ours, len(theirs_summary["exports"]) if capped else None)
+    return [key for key in ours_summary if ours_summary[key] != theirs_summary[key]]
+
+
 def main(folder):
     files = sorted(p for p in Path(folder).iterdir() if p.suffix.lower() in {".dll", ".exe"})
     outcomes = Counter()
@@ -67,10 +75,7 @@ def main(folder):
             outcomes["peoxide failed"] += 1
             examples.setdefault("peoxide failed", []).append(f"{path.name}: {error}")
             continue
-        theirs_summary = summarize(reference)
-        capped = any("Assuming corrupt" in w for w in reference.get_warnings())
-        ours_summary = summarize(ours, len(theirs_summary["exports"]) if capped else None)
-        differing = [key for key in ours_summary if ours_summary[key] != theirs_summary[key]]
+        differing = differences(ours, reference)
         outcomes["mismatch" if differing else "match"] += 1
         for key in differing:
             examples.setdefault(f"{key} differs", []).append(path.name)
