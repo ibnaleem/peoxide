@@ -68,6 +68,16 @@ Everything is parsed up front, and every attribute below is read-only.
 | `DIRECTORY_ENTRY_IMPORT` | List of imported DLLs, each with `dll` (bytes) and `imports`. Each import has `name` (bytes or `None`), `hint`, `ordinal`, `import_by_ordinal` and `address` (the IAT slot's virtual address). |
 | `DIRECTORY_ENTRY_EXPORT` | Has `symbols`, a list where each symbol has `name` (bytes or `None`), `ordinal`, `address` (RVA) and `forwarder` (bytes or `None`). |
 
+Flags read as booleans, as in pefile. `FILE_HEADER.IMAGE_FILE_DLL`,
+`OPTIONAL_HEADER.IMAGE_DLLCHARACTERISTICS_NX_COMPAT` and `section.IMAGE_SCN_MEM_EXECUTE` are
+examples, and every `IMAGE_FILE_*`, `IMAGE_DLLCHARACTERISTICS_*` and `IMAGE_SCN_*` name works.
+
+| Method | Returns |
+|---|---|
+| `is_dll()` | `True` when `FILE_HEADER` has `IMAGE_FILE_DLL` set. |
+| `is_driver()` | `True` when the image imports a kernel module such as `ntoskrnl.exe`, or has a `PAGE` section and a native subsystem. Uses pefile's heuristic. |
+| `is_exe()` | `True` when the image is marked executable and is neither a DLL nor a driver. |
+
 Errors:
 
 | Situation | Exception |
@@ -95,8 +105,9 @@ with the differences listed above normalized away:
 
 | Folder | Files | Match |
 |---|---:|---:|
-| `C:\Windows\System32` | 4,272 | 4,272 |
+| `C:\Windows\System32` | 4,277 | 4,277 |
 | `C:\Windows\SysWOW64` (32-bit) | 2,734 | 2,734 |
+| `C:\Windows\System32\drivers` | 500 | 500 |
 
 The sweep skipped 6 more SysWOW64 files because pefile could not parse them.
 `tests/test_errors.py` feeds peoxide empty, garbage, truncated and 2,000 randomly corrupted
