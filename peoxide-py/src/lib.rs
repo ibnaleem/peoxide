@@ -415,6 +415,17 @@ impl PE {
             .transpose()
     }
 
+    /// Offset of data appended past everything the headers describe, or `None`.
+    fn get_overlay_data_start_offset(&self) -> Option<usize> {
+        self.pe.overlay_offset()
+    }
+
+    /// The appended data itself, or `None`.
+    fn get_overlay<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+        let offset = self.pe.overlay_offset()?;
+        Some(PyBytes::new(py, &self.data.as_bytes(py)[offset..]))
+    }
+
     /// True for a standard executable: not a DLL, not a driver, and marked executable.
     fn is_exe(&self) -> bool {
         self.pe.is_exe()
