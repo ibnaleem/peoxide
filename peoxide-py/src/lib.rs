@@ -328,6 +328,9 @@ struct PE {
     DIRECTORY_ENTRY_IMPORT: Py<PyList>,
     #[pyo3(get)]
     DIRECTORY_ENTRY_EXPORT: Py<ExportDirData>,
+    exe: bool,
+    dll: bool,
+    driver: bool,
 }
 
 #[pymethods]
@@ -364,7 +367,25 @@ impl PE {
             sections: list(py, &pe.sections, Section::new)?,
             DIRECTORY_ENTRY_IMPORT: list(py, &pe.imports, ImportDescData::new)?,
             DIRECTORY_ENTRY_EXPORT: Py::new(py, ExportDirData::new(py, &pe.exports)?)?,
+            exe: pe.is_exe(),
+            dll: pe.is_dll(),
+            driver: pe.is_driver(),
         })
+    }
+
+    /// True for a standard executable: not a DLL, not a driver, and marked executable.
+    fn is_exe(&self) -> bool {
+        self.exe
+    }
+
+    /// True when FILE_HEADER has IMAGE_FILE_DLL set.
+    fn is_dll(&self) -> bool {
+        self.dll
+    }
+
+    /// True when the image imports a kernel DLL, or has a PAGE section and a native subsystem.
+    fn is_driver(&self) -> bool {
+        self.driver
     }
 }
 
