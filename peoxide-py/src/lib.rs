@@ -22,6 +22,10 @@ int_struct!(DosHeader from peoxide_core::DosHeader {
     e_lfanew: u32 = e_lfanew,
 });
 
+int_struct!(NtHeaders from peoxide_core::Headers {
+    Signature: u32 = signature,
+});
+
 int_struct!(FileHeader from peoxide_core::FileHeader {
     Machine: u16 = machine,
     NumberOfSections: u16 = number_of_sections,
@@ -71,6 +75,8 @@ struct PE {
     #[pyo3(get)]
     DOS_HEADER: Py<DosHeader>,
     #[pyo3(get)]
+    NT_HEADERS: Py<NtHeaders>,
+    #[pyo3(get)]
     FILE_HEADER: Py<FileHeader>,
     #[pyo3(get)]
     OPTIONAL_HEADER: Py<OptionalHeader>,
@@ -86,6 +92,7 @@ impl PE {
 
         Ok(PE {
             DOS_HEADER: Py::new(py, DosHeader::from(&h.dos_header))?,
+            NT_HEADERS: Py::new(py, NtHeaders::from(h))?,
             FILE_HEADER: Py::new(py, FileHeader::from(&h.file_header))?,
             OPTIONAL_HEADER: Py::new(py, OptionalHeader::from(&h.optional_header))?,
         })
