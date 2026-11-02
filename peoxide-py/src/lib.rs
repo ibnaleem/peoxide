@@ -4,7 +4,7 @@ use pyo3::create_exception;
 use pyo3::exceptions::{PyAttributeError, PyException, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyBytes, PyList, PyTuple};
+use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 
 create_exception!(
     peoxide,
@@ -487,14 +487,36 @@ struct ResourceDirData {
     structure: Py<ResourceDirectoryStruct>,
     #[pyo3(get)]
     entries: Py<PyList>,
+    strings: Option<Py<PyDict>>,
 }
 
 impl ResourceDirData {
     fn new(py: Python<'_>, d: &peoxide_core::ResourceDirectory) -> PyResult<Self> {
+        let strings = d
+            .strings
+            .as_ref()
+            .map(|table| -> PyResult<_> {
+                let dict = PyDict::new(py);
+                for (key, value) in table {
+                    dict.set_item(key, value)?;
+                }
+                Ok(dict.unbind())
+            })
+            .transpose()?;
         Ok(ResourceDirData {
             structure: Py::new(py, ResourceDirectoryStruct::new(py, d)?)?,
             entries: list(py, &d.entries, ResourceDirEntryData::new)?,
+            strings,
         })
+    }
+}
+
+#[pymethods]
+impl ResourceDirData {
+    /// The decoded string table, only on the per-block directories under RT_STRING.
+    #[getter]
+    fn strings(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        missing(&self.strings, py, "strings")
     }
 }
 
