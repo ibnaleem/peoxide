@@ -1,0 +1,215 @@
+//! The resource tree, following pefile's `parse_resources_directory`.
+//!
+//! RT_STRING tables and version information, which pefile also decodes, are not parsed.
+
+use crate::Pe;
+
+const RESOURCE_DIRECTORY: usize = 2;
+const DIRECTORY_HEADER_SIZE: i64 = 16;
+const ENTRY_SIZE: i64 = 8;
+const DATA_ENTRY_SIZE: i64 = 16;
+const MAX_DEPTH: usize = 32;
+const MAX_ENTRIES_PER_DIRECTORY: usize = 4096;
+const MAX_ENTRIES: usize = 0x8000;
+const FIRST_STRING_READ: i64 = 256;
+
+pub struct ResourceDirectory {
+    pub characteristics: u32,
+    pub time_date_stamp: u32,
+    pub major_version: u16,
+    pub minor_version: u16,
+    pub number_of_named_entries: u16,
+    pub number_of_id_entries: u16,
+    pub entries: Vec<ResourceEntry>,
+}
+
+pub struct ResourceEntry {
+    /// The raw `Name` field: an ID, or a string offset with the high bit set.
+    pub name_field: u32,
+    pub offset_to_data: u32,
+    /// Set for named entries. The inner value is `None` where pefile leaves the string unread.
+    pub name: Option<Option<Vec<u8>>>,
+    pub child: ResourceChild,
+}
+
+pub enum ResourceChild {
+    Directory(ResourceDirectory),
+    Data(ResourceData),
+}
+
+pub struct ResourceData {
+    pub offset_to_data: u32,
+    pub size: u32,
+    pub code_page: u32,
+    pub reserved: u32,
+}
+
+fn u16_at(b: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([b[at], b[at + 1]])
+}
+
+fn u32_at(b: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+}
+
+/// UTF-8 with lone surrogates written as `\udXXX`, as pefile's `backslashreplace_` does.
+/// pefile decodes each UTF-16 unit on its own, so surrogate pairs are escaped too.
+fn encode_units(units: impl Iterator<Item = u16>) -> Vec<u8> {
+    let mut out = String::new();
+    for unit in units {
+        match char::from_u32(unit as u32) {
+            Some(c) => out.push(c),
+            None => out.push_str(&format!("\\u{unit:04x}")),
+        }
+    }
+    out.into_bytes()
+}
+
+struct Walk<'a> {
+    pe: &'a Pe,
+    data: &'a [u8],
+    base: i64,
+    total_entries: usize,
+}
+
+impl Walk<'_> {
+    fn read(&self, rva: i64, length: i64) -> Option<&[u8]> {
+        self.data.get(self.pe.data_range(rva, Some(length))?)
+    }
+
+    fn read_exact(&self, rva: i64, length: i64) -> Option<&[u8]> {
+        self.read(rva, length)
+            .filter(|b| b.len() == length as usize)
+    }
+
+    fn word(&self, rva: i64) -> u16 {
+        self.read_exact(rva, 2).map_or(0, |b| u16_at(b, 0))
+    }
+
+    /// pefile's `get_string_u_at_rva`: up to `max_units` UTF-16 units, stopping at a NUL unit.
+    fn string_at(&self, rva: i64, max_units: u16) -> Option<Vec<u8>> {
+        if max_units == 0 {
+            return Some(Vec::new());
+        }
+        self.read(rva, 2)?;
+        let max = max_units as i64 * 2;
+        let mut bytes = self.read(rva, max.min(FIRST_STRING_READ))?.to_vec();
+        let has_nul = |b: &[u8]| b.as_chunks::<2>().0.contains(&[0, 0]);
+        if !has_nul(&bytes) && bytes.len() as i64 == FIRST_STRING_READ && max > FIRST_STRING_READ {
+            bytes.extend_from_slice(self.read(rva + FIRST_STRING_READ, max - FIRST_STRING_READ)?);
+        }
+        let units = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&u| u16::from_le_bytes(u))
+            .take_while(|&u| u != 0);
+        Some(encode_units(units))
+    }
+
+    fn directory(
+        &mut self,
+        rva: i64,
+        level: usize,
+        parents: &mut Vec<i64>,
+    ) -> Option<ResourceDirectory> {
+        if level > MAX_DEPTH {
+            return None;
+        }
+        let header = self.read_exact(rva, DIRECTORY_HEADER_SIZE)?;
+        let mut directory = ResourceDirectory {
+            characteristics: u32_at(header, 0),
+            time_date_stamp: u32_at(header, 4),
+            major_version: u16_at(header, 8),
+            minor_version: u16_at(header, 10),
+            number_of_named_entries: u16_at(header, 12),
+            number_of_id_entries: u16_at(header, 14),
+            entries: Vec::new(),
+        };
+        let count =
+            directory.number_of_named_entries as usize + directory.number_of_id_entries as usize;
+        if count > MAX_ENTRIES_PER_DIRECTORY {
+            return None;
+        }
+        self.total_entries += count;
+        if self.total_entries > MAX_ENTRIES {
+            return None;
+        }
+        let mut last_name: Option<(i64, i64, usize)> = None;
+        for i in 0..count as i64 {
+            let Some(raw) =
+                self.read_exact(rva + DIRECTORY_HEADER_SIZE + i * ENTRY_SIZE, ENTRY_SIZE)
+            else {
+                break;
+            };
+            let (name_field, offset_to_data) = (u32_at(raw, 0), u32_at(raw, 4));
+            let target = self.base + (offset_to_data & 0x7FFF_FFFF) as i64;
+            let mut name = None;
+            if name_field & 0x8000_0000 != 0 {
+                let start = self.base + (name_field & 0x7FFF_FFFF) as i64;
+                let length = self.word(start);
+                if let Some((begin, end, index)) = last_name
+                    && begin < start
+                    && end >= start
+                {
+                    if let Some(previous) = directory.entries.get_mut(index) {
+                        previous.name = Some(None);
+                    }
+                    break;
+                }
+                last_name = Some((start, start + length as i64, directory.entries.len()));
+                name = Some(self.string_at(start + 2, length));
+            }
+            let child = if offset_to_data & 0x8000_0000 != 0 {
+                if parents.contains(&target) {
+                    break;
+                }
+                parents.push(target);
+                let child = self.directory(target, level + 1, parents);
+                parents.pop();
+                match child {
+                    Some(child) => ResourceChild::Directory(child),
+                    None => break,
+                }
+            } else {
+                let Some(raw) = self.read_exact(target, DATA_ENTRY_SIZE) else {
+                    break;
+                };
+                ResourceChild::Data(ResourceData {
+                    offset_to_data: u32_at(raw, 0),
+                    size: u32_at(raw, 4),
+                    code_page: u32_at(raw, 8),
+                    reserved: u32_at(raw, 12),
+                })
+            };
+            directory.entries.push(ResourceEntry {
+                name_field,
+                offset_to_data,
+                name,
+                child,
+            });
+        }
+        Some(directory)
+    }
+}
+
+impl Pe {
+    pub(crate) fn parse_resources(&self, data: &[u8]) -> Option<ResourceDirectory> {
+        let directory = self
+            .headers
+            .optional_header
+            .data_directory
+            .get(RESOURCE_DIRECTORY)?;
+        if directory.virtual_address == 0 {
+            return None;
+        }
+        let base = directory.virtual_address as i64;
+        let mut walk = Walk {
+            pe: self,
+            data,
+            base,
+            total_entries: 0,
+        };
+        walk.directory(base, 0, &mut vec![base])
+    }
+}
