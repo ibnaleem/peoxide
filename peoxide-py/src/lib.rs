@@ -32,6 +32,39 @@ int_struct!(FileHeader from peoxide_core::FileHeader {
     Characteristics: u16 = characteristics,
 });
 
+int_struct!(OptionalHeader from peoxide_core::OptionalHeader {
+    Magic: u16 = magic,
+    MajorLinkerVersion: u8 = major_linker_version,
+    MinorLinkerVersion: u8 = minor_linker_version,
+    SizeOfCode: u64 = size_of_code,
+    SizeOfInitializedData: u64 = size_of_initialized_data,
+    SizeOfUninitializedData: u64 = size_of_uninitialized_data,
+    AddressOfEntryPoint: u32 = address_of_entry_point,
+    BaseOfCode: u64 = base_of_code,
+    BaseOfData: Option<u32> = base_of_data,
+    ImageBase: u64 = image_base,
+    SectionAlignment: u32 = section_alignment,
+    FileAlignment: u32 = file_alignment,
+    MajorOperatingSystemVersion: u16 = major_operating_system_version,
+    MinorOperatingSystemVersion: u16 = minor_operating_system_version,
+    MajorImageVersion: u16 = major_image_version,
+    MinorImageVersion: u16 = minor_image_version,
+    MajorSubsystemVersion: u16 = major_subsystem_version,
+    MinorSubsystemVersion: u16 = minor_subsystem_version,
+    Reserved1: u32 = win32_version_value,
+    SizeOfImage: u32 = size_of_image,
+    SizeOfHeaders: u32 = size_of_headers,
+    CheckSum: u32 = checksum,
+    Subsystem: u16 = subsystem,
+    DllCharacteristics: u16 = dll_characteristics,
+    SizeOfStackReserve: u64 = size_of_stack_reserve,
+    SizeOfStackCommit: u64 = size_of_stack_commit,
+    SizeOfHeapReserve: u64 = size_of_heap_reserve,
+    SizeOfHeapCommit: u64 = size_of_heap_commit,
+    LoaderFlags: u32 = loader_flags,
+    NumberOfRvaAndSizes: u32 = number_of_rva_and_sizes,
+});
+
 /// A parsed PE file. Everything is parsed once, up front, in Rust.
 #[pyclass(frozen, module = "peoxide")]
 struct PE {
@@ -39,6 +72,8 @@ struct PE {
     DOS_HEADER: Py<DosHeader>,
     #[pyo3(get)]
     FILE_HEADER: Py<FileHeader>,
+    #[pyo3(get)]
+    OPTIONAL_HEADER: Py<OptionalHeader>,
 }
 
 #[pymethods]
@@ -52,6 +87,7 @@ impl PE {
         Ok(PE {
             DOS_HEADER: Py::new(py, DosHeader::from(&h.dos_header))?,
             FILE_HEADER: Py::new(py, FileHeader::from(&h.file_header))?,
+            OPTIONAL_HEADER: Py::new(py, OptionalHeader::from(&h.optional_header))?,
         })
     }
 }
