@@ -133,6 +133,30 @@ def test_data_directory(pair):
     ]
 
 
+FILE_FLAGS = [name for name, _ in pefile.retrieve_flags(pefile.IMAGE_CHARACTERISTICS, "IMAGE_FILE_")]
+DLL_FLAGS = [
+    name
+    for name, _ in pefile.retrieve_flags(pefile.DLL_CHARACTERISTICS, "IMAGE_DLLCHARACTERISTICS_")
+]
+SECTION_FLAGS = [
+    name for name, _ in pefile.retrieve_flags(pefile.SECTION_CHARACTERISTICS, "IMAGE_SCN_")
+]
+
+
+def test_flags(pair):
+    ours, theirs = pair
+    assert_fields_match(ours.FILE_HEADER, theirs.FILE_HEADER, FILE_FLAGS)
+    assert_fields_match(ours.OPTIONAL_HEADER, theirs.OPTIONAL_HEADER, DLL_FLAGS)
+    for mine, ref in zip(ours.sections, theirs.sections):
+        assert_fields_match(mine, ref, SECTION_FLAGS)
+
+
+def test_unknown_attribute_raises(pair):
+    ours, _ = pair
+    with pytest.raises(AttributeError):
+        ours.FILE_HEADER.IMAGE_FILE_NOT_A_FLAG
+
+
 def test_sections(pair):
     ours, theirs = pair
     assert len(ours.sections) == len(theirs.sections)
