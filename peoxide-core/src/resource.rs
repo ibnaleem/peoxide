@@ -12,6 +12,9 @@ const MAX_DEPTH: usize = 32;
 const MAX_ENTRIES_PER_DIRECTORY: usize = 4096;
 const MAX_ENTRIES: usize = 0x8000;
 const FIRST_STRING_READ: i64 = 256;
+const RT_STRING: u32 = 6;
+const STRINGS_PER_BLOCK: i64 = 16;
+const MAX_DECODE_ERRORS: usize = 3;
 
 pub struct ResourceDirectory {
     pub characteristics: u32,
@@ -21,6 +24,9 @@ pub struct ResourceDirectory {
     pub number_of_named_entries: u16,
     pub number_of_id_entries: u16,
     pub entries: Vec<ResourceEntry>,
+    /// pefile's `strings`: set only on the per-block directories under RT_STRING, in
+    /// insertion order, where a later language overwrites an earlier one's value.
+    pub strings: Option<Vec<(i64, String)>>,
 }
 
 pub struct ResourceEntry {
@@ -65,6 +71,40 @@ fn encode_units(units: impl Iterator<Item = u16>) -> Vec<u8> {
     out.into_bytes()
 }
 
+fn insert(table: &mut Vec<(i64, String)>, key: i64, value: String) {
+    match table.iter_mut().find(|(k, _)| *k == key) {
+        Some(slot) => slot.1 = value,
+        None => table.push((key, value)),
+    }
+}
+
+/// pefile's `parse_strings`: length-prefixed UTF-16 strings, numbered from `counter`.
+fn parse_strings(data: &[u8], mut counter: i64, table: &mut Vec<(i64, String)>) {
+    let (mut i, mut errors) = (0, 0);
+    while let Some(prefix) = data.get(i..i + 2) {
+        let length = i16::from_le_bytes([prefix[0], prefix[1]]) as i64;
+        i += 2;
+        if length != 0 && (0..=data.len() as i64).contains(&(length * 2)) {
+            let bytes = &data[i.min(data.len())..(i + length as usize * 2).min(data.len())];
+            let units: Vec<u16> = bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&u| u16::from_le_bytes(u))
+                .collect();
+            match String::from_utf16(&units) {
+                Ok(s) if bytes.len().is_multiple_of(2) => insert(table, counter, s),
+                _ => errors += 1,
+            }
+            if errors >= MAX_DECODE_ERRORS {
+                break;
+            }
+            i += length as usize * 2;
+        }
+        counter += 1;
+    }
+}
+
 struct Walk<'a> {
     pe: &'a Pe,
     data: &'a [u8],
@@ -107,6 +147,26 @@ impl Walk<'_> {
         Some(encode_units(units))
     }
 
+    /// Decodes every string block under an RT_STRING type directory.
+    fn attach_strings(&self, string_type: &mut ResourceDirectory) {
+        for block in &mut string_type.entries {
+            let block_id = (block.name.is_none()).then_some(block.name_field);
+            let ResourceChild::Directory(languages) = &mut block.child else {
+                continue;
+            };
+            let mut table = Vec::new();
+            for language in &languages.entries {
+                let (ResourceChild::Data(leaf), Some(id)) = (&language.child, block_id) else {
+                    continue;
+                };
+                if let Some(bytes) = self.read(leaf.offset_to_data as i64, leaf.size as i64) {
+                    parse_strings(bytes, (id as i64 - 1) * STRINGS_PER_BLOCK, &mut table);
+                }
+            }
+            languages.strings = Some(table);
+        }
+    }
+
     fn directory(
         &mut self,
         rva: i64,
@@ -125,6 +185,7 @@ impl Walk<'_> {
             number_of_named_entries: u16_at(header, 12),
             number_of_id_entries: u16_at(header, 14),
             entries: Vec::new(),
+            strings: None,
         };
         let count =
             directory.number_of_named_entries as usize + directory.number_of_id_entries as usize;
@@ -168,7 +229,12 @@ impl Walk<'_> {
                 let child = self.directory(target, level + 1, parents);
                 parents.pop();
                 match child {
-                    Some(child) => ResourceChild::Directory(child),
+                    Some(mut child) => {
+                        if name.is_none() && name_field == RT_STRING {
+                            self.attach_strings(&mut child);
+                        }
+                        ResourceChild::Directory(child)
+                    }
                     None => break,
                 }
             } else {

@@ -411,7 +411,8 @@ def resource_tree(directory):
         )
         name = e.name and (e.name.string, str(e.name))
         entries.append(([getattr(e.struct, f) for f in RESOURCE_ENTRY_FIELDS], name, e.id, child))
-    return [getattr(directory.struct, f) for f in RESOURCE_DIR_FIELDS], entries
+    strings = list(directory.strings.items()) if hasattr(directory, "strings") else None
+    return [getattr(directory.struct, f) for f in RESOURCE_DIR_FIELDS], entries, strings
 
 
 def test_resources(pair):
@@ -419,6 +420,15 @@ def test_resources(pair):
     assert resource_tree(ours.DIRECTORY_ENTRY_RESOURCE) == resource_tree(
         getattr(theirs, "DIRECTORY_ENTRY_RESOURCE", None)
     )
+
+
+def test_corpus_has_string_tables():
+    def has_strings(directory):
+        return hasattr(directory, "strings") and bool(directory.strings) or any(
+            has_strings(e.directory) for e in directory.entries if hasattr(e, "directory")
+        )
+
+    assert any(has_strings(peoxide.PE(str(p)).DIRECTORY_ENTRY_RESOURCE) for p in CORPUS)
 
 
 def test_self_referencing_resource_directory_stops_like_pefile():

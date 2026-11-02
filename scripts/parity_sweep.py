@@ -137,6 +137,7 @@ def resource_tree(directory):
             )
             for e in directory.entries
         ],
+        list(directory.strings.items()) if hasattr(directory, "strings") else None,
     )
 
 
