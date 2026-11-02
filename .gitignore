@@ -72,3 +72,5 @@ opencode.json
 skills-lock.json
 .gateguard/
 .ignore
+__pycache__/
+AGENTS.md.bak*
