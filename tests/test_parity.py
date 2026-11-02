@@ -126,6 +126,13 @@ def test_optional_header(pair):
     assert ours.OPTIONAL_HEADER.BaseOfData == getattr(theirs.OPTIONAL_HEADER, "BaseOfData", None)
 
 
+def test_data_directory(pair):
+    ours, theirs = pair
+    assert [(d.name, d.VirtualAddress, d.Size) for d in ours.OPTIONAL_HEADER.DATA_DIRECTORY] == [
+        (d.name, d.VirtualAddress, d.Size) for d in theirs.OPTIONAL_HEADER.DATA_DIRECTORY
+    ]
+
+
 def test_sections(pair):
     ours, theirs = pair
     assert len(ours.sections) == len(theirs.sections)
