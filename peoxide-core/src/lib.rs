@@ -1,4 +1,5 @@
 mod address;
+mod delay;
 mod headers;
 mod imphash;
 mod ordinals;
@@ -24,6 +25,7 @@ pub struct Pe {
     pub file_size: usize,
     pub header_size: i64,
     pub imports: Vec<ImportDll>,
+    pub delay_imports: Vec<ImportDll>,
     pub exports: Vec<ExportSymbol>,
 }
 
@@ -105,15 +107,19 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
     let mut sections = pe.sections;
     // pefile orders sections by VirtualAddress, not by section-table position.
     sections.sort_by_key(|s| s.virtual_address);
-    Ok(Pe {
+    let mut pe = Pe {
         layouts: address::section_layouts(&sections, &headers, data.len()),
         header_size: address::header_size(&headers, &sections),
         file_size: data.len(),
         headers,
         sections,
         imports,
+        delay_imports: Vec::new(),
         exports,
-    })
+    };
+    // Reading the delay-import table needs the section layouts above.
+    pe.delay_imports = pe.parse_delay_imports(data);
+    Ok(pe)
 }
 
 fn imports(pe: &PE, image_base: u64) -> Vec<ImportDll> {
