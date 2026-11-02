@@ -53,7 +53,26 @@ def summarize(pe, export_limit=None):
 DOS_FIELDS = [entry.split(",")[1] for entry in pefile.PE.__IMAGE_DOS_HEADER_format__[1]]
 
 
-def details(pe):
+def outcome(method, *args):
+    try:
+        return method(*args)
+    except (pefile.PEFormatError, peoxide.PEFormatError):
+        return "raised"
+
+
+def probes(pe):
+    """RVAs and file offsets around every section boundary, the headers and the file end."""
+    size = len(pe.__data__)
+    rvas, offsets = {0, 0x40, size - 1, size + 0x100000}, {0, 0x40, size - 1, size + 0x100000}
+    for s in pe.sections:
+        end = s.VirtualAddress + max(s.Misc_VirtualSize, s.SizeOfRawData)
+        rvas |= {s.VirtualAddress, s.VirtualAddress + 0x10, end - 1, end}
+        raw_end = s.PointerToRawData + s.SizeOfRawData
+        offsets |= {s.PointerToRawData, s.PointerToRawData + 0x10, raw_end - 1, raw_end}
+    return sorted(rvas), sorted(offsets)
+
+
+def details(pe, rvas, offsets):
     """Fields checked by the sweep but not read inside the benchmark timer."""
     return {
         "dos header": [getattr(pe.DOS_HEADER, field) for field in DOS_FIELDS],
@@ -61,14 +80,22 @@ def details(pe):
             (d.name, d.VirtualAddress, d.Size) for d in pe.OPTIONAL_HEADER.DATA_DIRECTORY
         ],
         "classification": (pe.is_exe(), pe.is_dll(), pe.is_driver()),
+        "overlay": pe.get_overlay_data_start_offset(),
+        "section data": [(s.get_hash_md5(), round(s.get_entropy(), 9)) for s in pe.sections],
+        "rva mapping": [
+            (outcome(pe.get_offset_from_rva, rva), outcome(pe.get_data, rva, 16)) for rva in rvas
+        ],
+        "offset mapping": [pe.get_rva_from_offset(offset) for offset in offsets],
     }
 
 
 def differences(ours, reference):
     """Names of the summary parts where a peoxide.PE and a pefile.PE disagree."""
-    theirs_summary = summarize(reference) | details(reference)
+    rvas, offsets = probes(reference)
+    theirs_summary = summarize(reference) | details(reference, rvas, offsets)
     capped = any("Assuming corrupt" in w for w in reference.get_warnings())
-    ours_summary = summarize(ours, len(theirs_summary["exports"]) if capped else None) | details(ours)
+    ours_summary = summarize(ours, len(theirs_summary["exports"]) if capped else None)
+    ours_summary |= details(ours, rvas, offsets)
     return [key for key in ours_summary if ours_summary[key] != theirs_summary[key]]
 
 
