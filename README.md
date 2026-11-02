@@ -82,6 +82,8 @@ examples, and every `IMAGE_FILE_*`, `IMAGE_DLLCHARACTERISTICS_*` and `IMAGE_SCN_
 | `get_rva_from_offset(offset)` | The RVA a file offset maps to, or `None`. |
 | `get_section_by_rva(rva)`, `get_section_by_offset(offset)` | The section containing the address, or `None`. |
 | `get_overlay()`, `get_overlay_data_start_offset()` | Data appended after everything the headers describe, and where it starts, or `None`. |
+| `get_imphash(algorithm="md5")` | pefile's imphash: a hash of the lowercase `dll.function` import list, or `""` when nothing is imported. Ordinal imports from OLEAUT32, WS2_32 and WSOCK32 are named with pefile's tables, so the MD5 matches pefile's. Pass any `hashlib` name, such as `"sha256"`, for a different digest of the same input. |
+| `get_exphash(algorithm="md5")` | The same over the lowercase names of the named exports, or `""` when there are none. |
 
 Sections have methods too:
 
@@ -113,6 +115,7 @@ the two disagree in these cases:
 - **Ordinal imports from OLEAUT32 and WS2_32.** pefile looks up a name from its built-in table. peoxide leaves `name` as `None`, because the file contains only the ordinal.
 - **Very large export tables.** pefile stops after 8192 ordinal-only exports and treats the rest as corrupt. Some real DLLs, such as `mfc100.dll`, export more than that, and peoxide returns all of them.
 - **Very long export names.** pefile truncates names longer than `MAX_SYMBOL_NAME_LENGTH`. peoxide returns the full name.
+- **`get_exphash()` on those two kinds of file.** It hashes the full export list, so it differs from pefile's wherever pefile capped the table or truncated a name.
 - **Files with no imports or exports.** pefile leaves `DIRECTORY_ENTRY_IMPORT` and `DIRECTORY_ENTRY_EXPORT` undefined. peoxide always defines them, as an empty list and an object with an empty `symbols` list, so loops work without a `hasattr` check.
 - **Section reads that start before the section.** `section.get_data(start)` with `start` below the section's address gives pefile a negative offset, which Python treats as counting from the end of the file. peoxide clamps it to the start of the file instead.
 - **Scope.** peoxide does not parse resources, the Rich header, relocations, debug data or the delay-import table, and it cannot modify or write PE files.
