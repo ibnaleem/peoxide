@@ -111,3 +111,20 @@ def test_sections(pair):
     assert len(ours.sections) == len(theirs.sections)
     for mine, ref in zip(ours.sections, theirs.sections):
         assert_fields_match(mine, ref, SECTION_FIELDS)
+
+
+def test_imports(pair):
+    ours, theirs = pair
+    expected = getattr(theirs, "DIRECTORY_ENTRY_IMPORT", [])
+    assert [d.dll for d in ours.DIRECTORY_ENTRY_IMPORT] == [d.dll for d in expected]
+    for mine, ref in zip(ours.DIRECTORY_ENTRY_IMPORT, expected):
+        assert len(mine.imports) == len(ref.imports), mine.dll
+        for a, b in zip(mine.imports, ref.imports):
+            assert (a.name, a.ordinal, a.address, a.import_by_ordinal) == (
+                b.name,
+                b.ordinal,
+                b.address,
+                b.import_by_ordinal,
+            )
+            if a.name is not None:
+                assert a.hint == b.hint
