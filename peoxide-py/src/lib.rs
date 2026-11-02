@@ -105,6 +105,37 @@ impl Section {
     }
 }
 
+#[pyclass(frozen, get_all, module = "peoxide")]
+struct ImportData {
+    name: Option<Py<PyBytes>>,
+    hint: Option<u16>,
+    ordinal: Option<u16>,
+    import_by_ordinal: bool,
+    address: u64,
+}
+
+#[pyclass(frozen, get_all, module = "peoxide")]
+struct ImportDescData {
+    dll: Py<PyBytes>,
+    imports: Py<PyList>,
+}
+
+impl ImportDescData {
+    fn new(py: Python<'_>, d: &peoxide_core::ImportDll) -> PyResult<Self> {
+        let imports = d.imports.iter().map(|i| ImportData {
+            name: i.name.as_deref().map(|n| bytes(py, n)),
+            hint: i.hint,
+            ordinal: i.ordinal,
+            import_by_ordinal: i.ordinal.is_some(),
+            address: i.address,
+        });
+        Ok(ImportDescData {
+            dll: bytes(py, &d.dll),
+            imports: PyList::new(py, imports)?.unbind(),
+        })
+    }
+}
+
 /// A parsed PE file. Everything is parsed once, up front, in Rust.
 #[pyclass(frozen, module = "peoxide")]
 struct PE {
@@ -118,6 +149,8 @@ struct PE {
     OPTIONAL_HEADER: Py<OptionalHeader>,
     #[pyo3(get)]
     sections: Py<PyList>,
+    #[pyo3(get)]
+    DIRECTORY_ENTRY_IMPORT: Py<PyList>,
 }
 
 #[pymethods]
@@ -128,6 +161,11 @@ impl PE {
         let pe = peoxide_core::parse(&data).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let h = &pe.headers;
         let sections = pe.sections.iter().map(|s| Section::new(py, s));
+        let imports = pe
+            .imports
+            .iter()
+            .map(|d| ImportDescData::new(py, d))
+            .collect::<PyResult<Vec<_>>>()?;
 
         Ok(PE {
             DOS_HEADER: Py::new(py, DosHeader::from(&h.dos_header))?,
@@ -135,6 +173,7 @@ impl PE {
             FILE_HEADER: Py::new(py, FileHeader::from(&h.file_header))?,
             OPTIONAL_HEADER: Py::new(py, OptionalHeader::from(&h.optional_header))?,
             sections: PyList::new(py, sections)?.unbind(),
+            DIRECTORY_ENTRY_IMPORT: PyList::new(py, imports)?.unbind(),
         })
     }
 }
