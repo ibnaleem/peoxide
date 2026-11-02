@@ -37,7 +37,7 @@ def pefile_scoped(data):
 
 PARSERS = {
     "peoxide": lambda data: peoxide.PE(data=data),
-    "pefile (headers + imports + exports)": pefile_scoped,
+    "pefile (same work as peoxide)": pefile_scoped,
     "pefile (default full parse)": lambda data: pefile.PE(data=data),
 }
 
