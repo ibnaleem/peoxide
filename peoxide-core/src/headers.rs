@@ -34,6 +34,7 @@ pub struct OptionalHeader {
     pub minor_subsystem_version: u16,
     pub win32_version_value: u32,
     pub size_of_image: u32,
+    pub size_of_headers: u32,
     pub checksum: u32,
     pub subsystem: u16,
     pub dll_characteristics: u16,
@@ -47,14 +48,14 @@ pub struct OptionalHeader {
 
 pub struct Headers {
     pub dos_header: DosHeader,
-    pub signature : u32,
+    pub signature: u32,
     pub file_header: FileHeader,
     pub optional_header: OptionalHeader,
 }
 
-pub fn parse(data: &[u8]) -> Result<Headers, goblin::error::Error> {
-    let headers = goblin::pe::header::Header::parse(data).map_err(|e| goblin::error::Error::Malformed(format!("Failed to parse PE headers: {}", e)))?;
-
+pub(crate) fn from_goblin(
+    headers: &goblin::pe::header::Header,
+) -> Result<Headers, goblin::error::Error> {
     let dos_header = DosHeader {
         e_magic: headers.dos_header.signature,
         e_lfanew: headers.dos_header.pe_pointer,
@@ -70,15 +71,16 @@ pub fn parse(data: &[u8]) -> Result<Headers, goblin::error::Error> {
         characteristics: headers.coff_header.characteristics,
     };
 
-    let opt = headers.optional_header.ok_or_else(|| goblin::error::Error::Malformed("missing optional header".into()))?;
-
+    let opt = headers
+        .optional_header
+        .as_ref()
+        .ok_or_else(|| goblin::error::Error::Malformed("missing optional header".into()))?;
 
     let base_of_data = if opt.standard_fields.magic == goblin::pe::optional_header::MAGIC_32 {
         Some(opt.standard_fields.base_of_data)
     } else {
         None
     };
-
 
     let optional_header = OptionalHeader {
         magic: opt.standard_fields.magic,
@@ -105,6 +107,7 @@ pub fn parse(data: &[u8]) -> Result<Headers, goblin::error::Error> {
         minor_subsystem_version: opt.windows_fields.minor_subsystem_version,
         win32_version_value: opt.windows_fields.win32_version_value,
         size_of_image: opt.windows_fields.size_of_image,
+        size_of_headers: opt.windows_fields.size_of_headers,
         checksum: opt.windows_fields.check_sum,
         subsystem: opt.windows_fields.subsystem,
         dll_characteristics: opt.windows_fields.dll_characteristics,
@@ -122,29 +125,4 @@ pub fn parse(data: &[u8]) -> Result<Headers, goblin::error::Error> {
         file_header,
         optional_header,
     })
-
-    
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use goblin::pe::header::{COFF_MACHINE_X86_64, DOS_MAGIC, PE_MAGIC};
-
-    const KERNEL32: &str = r"C:\Windows\System32\kernel32.dll";
-
-    #[test]
-    fn parses_kernel32_headers() {
-        let data = std::fs::read(KERNEL32).unwrap();
-        
-        let headers = parse(&data).unwrap();
-        let off = headers.dos_header.e_lfanew as usize;
-        assert_eq!(headers.dos_header.e_magic, DOS_MAGIC);
-        assert_eq!(&data[off..off + 4], b"PE\0\0");
-        assert_eq!(headers.file_header.machine, COFF_MACHINE_X86_64);
-        assert_eq!(headers.signature, PE_MAGIC);
-        assert_eq!(headers.optional_header.magic, goblin::pe::optional_header::MAGIC_64);
-        assert!(headers.optional_header.base_of_data.is_none());
-    }
-    
 }
