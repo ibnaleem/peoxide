@@ -1,6 +1,27 @@
 pub struct DosHeader {
     pub e_magic: u16,
+    pub e_cblp: u16,
+    pub e_cp: u16,
+    pub e_crlc: u16,
+    pub e_cparhdr: u16,
+    pub e_minalloc: u16,
+    pub e_maxalloc: u16,
+    pub e_ss: u16,
+    pub e_sp: u16,
+    pub e_csum: u16,
+    pub e_ip: u16,
+    pub e_cs: u16,
+    pub e_lfarlc: u16,
+    pub e_ovno: u16,
+    pub e_res: Vec<u8>,
+    pub e_oemid: u16,
+    pub e_oeminfo: u16,
+    pub e_res2: Vec<u8>,
     pub e_lfanew: u32,
+}
+
+fn le_bytes(words: &[u16]) -> Vec<u8> {
+    words.iter().flat_map(|w| w.to_le_bytes()).collect()
 }
 
 pub struct FileHeader {
@@ -56,9 +77,27 @@ pub struct Headers {
 pub(crate) fn from_goblin(
     headers: &goblin::pe::header::Header,
 ) -> Result<Headers, goblin::error::Error> {
+    let dos = &headers.dos_header;
     let dos_header = DosHeader {
-        e_magic: headers.dos_header.signature,
-        e_lfanew: headers.dos_header.pe_pointer,
+        e_magic: dos.signature,
+        e_cblp: dos.bytes_on_last_page,
+        e_cp: dos.pages_in_file,
+        e_crlc: dos.relocations,
+        e_cparhdr: dos.size_of_header_in_paragraphs,
+        e_minalloc: dos.minimum_extra_paragraphs_needed,
+        e_maxalloc: dos.maximum_extra_paragraphs_needed,
+        e_ss: dos.initial_relative_ss,
+        e_sp: dos.initial_sp,
+        e_csum: dos.checksum,
+        e_ip: dos.initial_ip,
+        e_cs: dos.initial_relative_cs,
+        e_lfarlc: dos.file_address_of_relocation_table,
+        e_ovno: dos.overlay_number,
+        e_res: le_bytes(&dos.reserved),
+        e_oemid: dos.oem_id,
+        e_oeminfo: dos.oem_info,
+        e_res2: le_bytes(&dos.reserved2),
+        e_lfanew: dos.pe_pointer,
     };
 
     let file_header = FileHeader {
