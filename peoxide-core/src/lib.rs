@@ -5,12 +5,14 @@ pub use debug::{DebugDirectory, DebugEntry};
 mod headers;
 mod imphash;
 mod ordinals;
+mod rich;
 pub use address::{SectionLayout, clamp, entropy};
 pub use goblin::error::Error;
 pub use goblin::pe::data_directories::DataDirectory;
 pub use goblin::pe::section_table::SectionTable as Section;
 pub use headers::*;
 pub use imphash::ordinal_name;
+pub use rich::RichHeader;
 
 use goblin::pe::PE;
 use goblin::pe::export::ExportAddressTableEntry;
@@ -30,6 +32,7 @@ pub struct Pe {
     pub delay_imports: Vec<ImportDll>,
     pub exports: Vec<ExportSymbol>,
     pub debug: Vec<DebugDirectory>,
+    pub rich_header: Option<RichHeader>,
 }
 
 pub struct ImportDll {
@@ -105,6 +108,7 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
 
     let pe = PE::parse_with_opts(data, &opts)?;
     let headers = headers::from_goblin(&pe.header)?;
+    let optional_header_offset = headers.dos_header.e_lfanew as usize + 24;
     let imports = imports(&pe, headers.optional_header.image_base);
     let exports = exports(data, &pe, headers.optional_header.file_alignment, &opts);
     let mut sections = pe.sections;
@@ -120,6 +124,7 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
         delay_imports: Vec::new(),
         exports,
         debug: Vec::new(),
+        rich_header: rich::parse(data, optional_header_offset),
     };
     // These directories are read through RVAs, which need the section layouts above.
     pe.delay_imports = pe.parse_delay_imports(data);
