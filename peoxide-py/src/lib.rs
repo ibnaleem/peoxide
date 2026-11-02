@@ -1,8 +1,16 @@
 #![allow(non_snake_case)] // Python attribute names follow pefile (e_lfanew, NumberOfSections, ...)
 
-use pyo3::exceptions::PyValueError;
+use pyo3::create_exception;
+use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList};
+
+create_exception!(
+    peoxide,
+    PEFormatError,
+    PyException,
+    "The data is not a valid PE file."
+);
 
 /// A read-only Python class whose integer fields are copied from a peoxide-core struct.
 macro_rules! int_struct {
@@ -174,7 +182,7 @@ impl PE {
     #[new]
     fn new(py: Python<'_>, name: std::path::PathBuf) -> PyResult<Self> {
         let data = std::fs::read(name)?;
-        let pe = peoxide_core::parse(&data).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let pe = peoxide_core::parse(&data).map_err(|e| PEFormatError::new_err(e.to_string()))?;
         let h = &pe.headers;
         let sections = pe.sections.iter().map(|s| Section::new(py, s));
         let imports = pe
@@ -209,5 +217,6 @@ impl PE {
 #[pymodule]
 fn peoxide(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PE>()?;
+    m.add("PEFormatError", m.py().get_type::<PEFormatError>())?;
     Ok(())
 }
