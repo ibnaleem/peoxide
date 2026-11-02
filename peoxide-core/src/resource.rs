@@ -1,6 +1,5 @@
-//! The resource tree, following pefile's `parse_resources_directory`.
-//!
-//! RT_STRING tables and version information, which pefile also decodes, are not parsed.
+//! The resource tree, following pefile's `parse_resources_directory`, with RT_STRING tables.
+//! Version information is decoded from the finished tree in `version.rs`.
 
 use crate::Pe;
 
