@@ -128,3 +128,14 @@ def test_imports(pair):
             )
             if a.name is not None:
                 assert a.hint == b.hint
+
+
+def test_exports(pair):
+    ours, theirs = pair
+    export_dir = getattr(theirs, "DIRECTORY_ENTRY_EXPORT", None)
+    expected = export_dir.symbols if export_dir else []
+
+    def key(s):
+        return (s.name, s.ordinal, s.address, s.forwarder)
+
+    assert [key(s) for s in ours.DIRECTORY_ENTRY_EXPORT.symbols] == [key(s) for s in expected]
