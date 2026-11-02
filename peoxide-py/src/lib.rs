@@ -360,7 +360,7 @@ impl OptionalHeader {
 
 fn hexdigest(py: Python<'_>, algorithm: &str, data: &[u8]) -> PyResult<String> {
     py.import("hashlib")?
-        .call_method1(algorithm, (PyBytes::new(py, data),))?
+        .call_method1("new", (algorithm, PyBytes::new(py, data)))?
         .call_method0("hexdigest")?
         .extract()
 }
@@ -545,6 +545,24 @@ impl PE {
     fn get_overlay<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
         let offset = self.pe.overlay_offset()?;
         Some(PyBytes::new(py, &self.data.as_bytes(py)[offset..]))
+    }
+
+    /// pefile's imphash: a hash of the lowercase `dll.function` import list, or `""` when
+    /// nothing is imported. MD5 by default, which is what other tools exchange; pass any
+    /// `hashlib` algorithm name, such as `"sha256"`, for a different digest of the same input.
+    #[pyo3(signature = (algorithm="md5"))]
+    fn get_imphash(&self, py: Python<'_>, algorithm: &str) -> PyResult<String> {
+        self.pe.imphash_input().map_or(Ok(String::new()), |input| {
+            hexdigest(py, algorithm, input.as_bytes())
+        })
+    }
+
+    /// Like `get_imphash`, over the lowercase names of the named exports.
+    #[pyo3(signature = (algorithm="md5"))]
+    fn get_exphash(&self, py: Python<'_>, algorithm: &str) -> PyResult<String> {
+        self.pe.exphash_input().map_or(Ok(String::new()), |input| {
+            hexdigest(py, algorithm, input.as_bytes())
+        })
     }
 
     /// True for a standard executable: not a DLL, not a driver, and marked executable.
