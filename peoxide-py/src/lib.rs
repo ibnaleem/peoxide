@@ -4,7 +4,7 @@ use pyo3::create_exception;
 use pyo3::exceptions::{PyAttributeError, PyException, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyBytes, PyList};
+use pyo3::types::{PyBytes, PyList, PyTuple};
 
 create_exception!(
     peoxide,
@@ -391,6 +391,146 @@ py_class!(BaseRelocationData from peoxide_core::RelocationBlock as (py, c) {
     .unbind(),
 });
 
+py_class!(ResourceDirectoryStruct from peoxide_core::ResourceDirectory as (py, c) {
+    Characteristics: u32 = c.characteristics,
+    TimeDateStamp: u32 = c.time_date_stamp,
+    MajorVersion: u16 = c.major_version,
+    MinorVersion: u16 = c.minor_version,
+    NumberOfNamedEntries: u16 = c.number_of_named_entries,
+    NumberOfIdEntries: u16 = c.number_of_id_entries,
+});
+
+py_class!(ResourceEntryStruct from peoxide_core::ResourceEntry as (py, c) {
+    Name: u32 = c.name_field,
+    OffsetToData: u32 = c.offset_to_data,
+    NameOffset: u32 = c.name_field & 0x7FFF_FFFF,
+    Id: u32 = c.name_field & 0xFFFF,
+    DataIsDirectory: u32 = c.offset_to_data >> 31,
+    OffsetToDirectory: u32 = c.offset_to_data & 0x7FFF_FFFF,
+});
+
+py_class!(ResourceDataStruct from peoxide_core::ResourceData as (py, c) {
+    OffsetToData: u32 = c.offset_to_data,
+    Size: u32 = c.size,
+    CodePage: u32 = c.code_page,
+    Reserved: u32 = c.reserved,
+});
+
+/// A resource name. `string` is UTF-8, or `None` where pefile leaves the name unread.
+#[pyclass(frozen, get_all, module = "peoxide")]
+struct ResourceName {
+    string: Option<Py<PyBytes>>,
+}
+
+#[pymethods]
+impl ResourceName {
+    #[pyo3(signature = (*args))]
+    fn decode(&self, py: Python<'_>, args: &Bound<'_, PyTuple>) -> PyResult<Py<PyAny>> {
+        match &self.string {
+            Some(s) if !s.as_bytes(py).is_empty() => Ok(s.call_method1(py, "decode", args)?),
+            _ => Ok("".into_pyobject(py)?.into_any().unbind()),
+        }
+    }
+
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        self.decode(py, &PyTuple::new(py, ["utf-8", "backslashreplace"])?)?
+            .extract(py)
+    }
+}
+
+#[pyclass(frozen, module = "peoxide")]
+struct ResourceDataEntryData {
+    #[pyo3(get, name = "struct")]
+    structure: Py<ResourceDataStruct>,
+    #[pyo3(get)]
+    lang: u32,
+    #[pyo3(get)]
+    sublang: u32,
+}
+
+/// Has `directory` or `data`, never both, as in pefile.
+#[pyclass(frozen, module = "peoxide")]
+struct ResourceDirEntryData {
+    #[pyo3(get, name = "struct")]
+    structure: Py<ResourceEntryStruct>,
+    #[pyo3(get)]
+    name: Option<Py<ResourceName>>,
+    #[pyo3(get)]
+    id: Option<u32>,
+    directory: Option<Py<ResourceDirData>>,
+    data: Option<Py<ResourceDataEntryData>>,
+}
+
+fn missing<T>(value: &Option<Py<T>>, py: Python<'_>, name: &str) -> PyResult<Py<T>> {
+    value
+        .as_ref()
+        .map(|v| v.clone_ref(py))
+        .ok_or_else(|| PyAttributeError::new_err(name.to_owned()))
+}
+
+#[pymethods]
+impl ResourceDirEntryData {
+    #[getter]
+    fn directory(&self, py: Python<'_>) -> PyResult<Py<ResourceDirData>> {
+        missing(&self.directory, py, "directory")
+    }
+
+    #[getter]
+    fn data(&self, py: Python<'_>) -> PyResult<Py<ResourceDataEntryData>> {
+        missing(&self.data, py, "data")
+    }
+}
+
+#[pyclass(frozen, module = "peoxide")]
+struct ResourceDirData {
+    #[pyo3(get, name = "struct")]
+    structure: Py<ResourceDirectoryStruct>,
+    #[pyo3(get)]
+    entries: Py<PyList>,
+}
+
+impl ResourceDirData {
+    fn new(py: Python<'_>, d: &peoxide_core::ResourceDirectory) -> PyResult<Self> {
+        Ok(ResourceDirData {
+            structure: Py::new(py, ResourceDirectoryStruct::new(py, d)?)?,
+            entries: list(py, &d.entries, ResourceDirEntryData::new)?,
+        })
+    }
+}
+
+impl ResourceDirEntryData {
+    fn new(py: Python<'_>, e: &peoxide_core::ResourceEntry) -> PyResult<Self> {
+        let (directory, data) = match &e.child {
+            peoxide_core::ResourceChild::Directory(d) => {
+                (Some(Py::new(py, ResourceDirData::new(py, d)?)?), None)
+            }
+            peoxide_core::ResourceChild::Data(d) => {
+                let entry = ResourceDataEntryData {
+                    structure: Py::new(py, ResourceDataStruct::new(py, d)?)?,
+                    lang: e.name_field & 0x3FF,
+                    sublang: e.name_field >> 10,
+                };
+                (None, Some(Py::new(py, entry)?))
+            }
+        };
+        let name = e
+            .name
+            .as_ref()
+            .map(|s| {
+                let string = s.as_deref().map(|s| bytes(py, s));
+                Py::new(py, ResourceName { string })
+            })
+            .transpose()?;
+        Ok(ResourceDirEntryData {
+            structure: Py::new(py, ResourceEntryStruct::new(py, e)?)?,
+            id: e.name.is_none().then_some(e.name_field),
+            name,
+            directory,
+            data,
+        })
+    }
+}
+
 type Flags = &'static [(&'static str, u32)];
 
 /// pefile's flag tables: each name reads as `bool(field & mask)`.
@@ -626,6 +766,7 @@ struct PE {
     RICH_HEADER: Option<Py<RichHeader>>,
     /// Built on first access: relocation lists run to tens of thousands of entries.
     relocations: PyOnceLock<Py<PyList>>,
+    resources: PyOnceLock<Option<Py<ResourceDirData>>>,
     pe: peoxide_core::Pe,
     data: Py<PyBytes>,
 }
@@ -676,6 +817,7 @@ impl PE {
                 .map(|r| Py::new(py, RichHeader::new(py, r)?))
                 .transpose()?,
             relocations: PyOnceLock::new(),
+            resources: PyOnceLock::new(),
             pe,
             data: data.unbind(),
         })
@@ -773,6 +915,21 @@ impl PE {
                 list(py, &self.pe.relocations, BaseRelocationData::new)
             })
             .map(|l| l.clone_ref(py))
+    }
+
+    /// The resource tree's root, or `None` when the file has no readable resource directory.
+    /// Built on first access.
+    #[getter]
+    fn DIRECTORY_ENTRY_RESOURCE(&self, py: Python<'_>) -> PyResult<Option<Py<ResourceDirData>>> {
+        self.resources
+            .get_or_try_init(py, || {
+                self.pe
+                    .resources
+                    .as_ref()
+                    .map(|r| Py::new(py, ResourceDirData::new(py, r)?))
+                    .transpose()
+            })
+            .map(|r| r.as_ref().map(|r| r.clone_ref(py)))
     }
 
     /// True for a standard executable: not a DLL, not a driver, and marked executable.
