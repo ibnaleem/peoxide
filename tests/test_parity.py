@@ -421,6 +421,16 @@ def test_resources(pair):
     )
 
 
+def test_self_referencing_resource_directory_stops_like_pefile():
+    data = bytearray(CORPUS[0].read_bytes())
+    pe = peoxide.PE(data=bytes(data))
+    first_entry = pe.get_offset_from_rva(pe.OPTIONAL_HEADER.DATA_DIRECTORY[2].VirtualAddress + 16)
+    data[first_entry + 4 : first_entry + 8] = (0x80000000).to_bytes(4, "little")
+    ours, theirs = peoxide.PE(data=bytes(data)), pefile.PE(data=bytes(data))
+    assert ours.DIRECTORY_ENTRY_RESOURCE.entries == []
+    assert resource_tree(ours.DIRECTORY_ENTRY_RESOURCE) == resource_tree(theirs.DIRECTORY_ENTRY_RESOURCE)
+
+
 def test_resource_entries_have_directory_or_data():
     root = peoxide.PE(str(CORPUS[0])).DIRECTORY_ENTRY_RESOURCE
     entry = root.entries[0]
