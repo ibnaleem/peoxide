@@ -20,6 +20,7 @@ import peoxide
 DIRECTORIES = [
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"],
 ]
 
 
@@ -86,6 +87,16 @@ def details(pe, rvas, offsets):
             (outcome(pe.get_offset_from_rva, rva), outcome(pe.get_data, rva, 16)) for rva in rvas
         ],
         "offset mapping": [pe.get_rva_from_offset(offset) for offset in offsets],
+        "delay imports": [
+            (
+                d.dll,
+                [
+                    (None if i.import_by_ordinal else i.name, i.ordinal, i.hint, i.address)
+                    for i in d.imports
+                ],
+            )
+            for d in getattr(pe, "DIRECTORY_ENTRY_DELAY_IMPORT", [])
+        ],
     }
 
 
