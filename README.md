@@ -68,6 +68,8 @@ Everything is parsed up front, and every attribute below is read-only.
 | `DIRECTORY_ENTRY_IMPORT` | List of imported DLLs, each with `dll` (bytes) and `imports`. Each import has `name` (bytes or `None`), `hint`, `ordinal`, `import_by_ordinal` and `address` (the IAT slot's virtual address). |
 | `DIRECTORY_ENTRY_DELAY_IMPORT` | Delay-loaded DLLs, in the same shape as `DIRECTORY_ENTRY_IMPORT`. Empty when the file has none. |
 | `DIRECTORY_ENTRY_DEBUG` | Debug records, each with `struct` (`Characteristics`, `TimeDateStamp`, `MajorVersion`, `MinorVersion`, `Type`, `SizeOfData`, `AddressOfRawData`, `PointerToRawData`) and `entry`. CodeView records decode to `entry.PdbFileName`, `entry.Age`, the GUID fields and pefile's `entry.Signature_String`, and type 20 decodes to `entry.ExDllCharacteristics` with its `IMAGE_DLLCHARACTERISTICS_EX_*` flags. Other types have `entry` set to `None`. |
+| `DIRECTORY_ENTRY_BASERELOC` | Base relocation blocks, each with `struct` (`VirtualAddress`, `SizeOfBlock`) and `entries`. Each entry has `type`, `rva` and `base_rva`. Built on first access, because large DLLs carry tens of thousands of entries. Empty when the file has none. |
+| `RICH_HEADER` | The decoded Rich header, with `checksum`, `values` (flattened `comp_id, count` pairs), `key`, `raw_data` and `clear_data`, or `None` when the file has none. |
 | `DIRECTORY_ENTRY_EXPORT` | Has `symbols`, a list where each symbol has `name` (bytes or `None`), `ordinal`, `address` (RVA) and `forwarder` (bytes or `None`). |
 
 Flags read as booleans, as in pefile. `FILE_HEADER.IMAGE_FILE_DLL`,
@@ -86,6 +88,7 @@ examples, and every `IMAGE_FILE_*`, `IMAGE_DLLCHARACTERISTICS_*` and `IMAGE_SCN_
 | `get_overlay()`, `get_overlay_data_start_offset()` | Data appended after everything the headers describe, and where it starts, or `None`. |
 | `get_imphash(algorithm="md5")` | pefile's imphash: a hash of the lowercase `dll.function` import list, or `""` when nothing is imported. Ordinal imports from OLEAUT32, WS2_32 and WSOCK32 are named with pefile's tables, so the MD5 matches pefile's. Pass any `hashlib` name, such as `"sha256"`, for a different digest of the same input. |
 | `get_exphash(algorithm="md5")` | The same over the lowercase names of the named exports, or `""` when there are none. |
+| `get_rich_header_hash(algorithm="md5")` | A hash of `RICH_HEADER.clear_data`, or `""` when the file has no Rich header. |
 
 Sections have methods too:
 
@@ -122,7 +125,8 @@ the two disagree in these cases:
 - **Section reads that start before the section.** `section.get_data(start)` with `start` below the section's address gives pefile a negative offset, which Python treats as counting from the end of the file. peoxide clamps it to the start of the file instead.
 - **Corrupt delay-import thunk tables.** pefile gives up on a thunk table that repeats one address 15 times or spreads its addresses over more than 128 MB. peoxide does not apply those two heuristics, so on such a table it may return entries where pefile returns none.
 - **IMAGE_DEBUG_TYPE_MISC records.** pefile decodes these pre-PDB debug records. peoxide leaves their `entry` as `None`.
-- **Scope.** peoxide does not parse resources, the Rich header or relocations, and it cannot modify or write PE files.
+- **Relocation entries.** They carry `type`, `rva` and `base_rva` but not pefile's per-entry `struct`. `DIRECTORY_ENTRY_BASERELOC` is an empty list, not undefined, when there are no relocations.
+- **Scope.** peoxide does not parse resources, and it cannot modify or write PE files.
 
 ## Correctness
 
