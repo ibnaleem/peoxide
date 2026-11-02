@@ -86,6 +86,31 @@ py_class!(FileHeader from peoxide_core::FileHeader as (py, c) {
     Characteristics: u16 = c.characteristics,
 });
 
+const DIRECTORY_NAMES: [&str; 16] = [
+    "IMAGE_DIRECTORY_ENTRY_EXPORT",
+    "IMAGE_DIRECTORY_ENTRY_IMPORT",
+    "IMAGE_DIRECTORY_ENTRY_RESOURCE",
+    "IMAGE_DIRECTORY_ENTRY_EXCEPTION",
+    "IMAGE_DIRECTORY_ENTRY_SECURITY",
+    "IMAGE_DIRECTORY_ENTRY_BASERELOC",
+    "IMAGE_DIRECTORY_ENTRY_DEBUG",
+    "IMAGE_DIRECTORY_ENTRY_COPYRIGHT",
+    "IMAGE_DIRECTORY_ENTRY_GLOBALPTR",
+    "IMAGE_DIRECTORY_ENTRY_TLS",
+    "IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG",
+    "IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT",
+    "IMAGE_DIRECTORY_ENTRY_IAT",
+    "IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT",
+    "IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR",
+    "IMAGE_DIRECTORY_ENTRY_RESERVED",
+];
+
+py_class!(DataDirectory from (usize, peoxide_core::DataDirectory) as (py, c) {
+    name: &'static str = DIRECTORY_NAMES[c.0],
+    VirtualAddress: u32 = c.1.virtual_address,
+    Size: u32 = c.1.size,
+});
+
 py_class!(OptionalHeader from peoxide_core::OptionalHeader as (py, c) {
     Magic: u16 = c.magic,
     MajorLinkerVersion: u8 = c.major_linker_version,
@@ -117,6 +142,11 @@ py_class!(OptionalHeader from peoxide_core::OptionalHeader as (py, c) {
     SizeOfHeapCommit: u64 = c.size_of_heap_commit,
     LoaderFlags: u32 = c.loader_flags,
     NumberOfRvaAndSizes: u32 = c.number_of_rva_and_sizes,
+    DATA_DIRECTORY: Py<PyList> = list(
+        py,
+        &c.data_directory.iter().copied().enumerate().collect::<Vec<_>>(),
+        DataDirectory::new,
+    )?,
 });
 
 py_class!(Section from peoxide_core::Section as (py, c) {
