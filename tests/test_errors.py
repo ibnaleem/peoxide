@@ -43,6 +43,41 @@ def test_truncated_file_raises(length):
         peoxide.PE(data=KERNEL32.read_bytes()[:length])
 
 
+I64_MAX = 2**63 - 1
+I64_MIN = -(2**63)
+
+
+@needs_kernel32
+def test_extreme_lengths_read_to_the_end_like_pefile():
+    import pefile
+
+    data = KERNEL32.read_bytes()
+    ours, theirs = peoxide.PE(data=data), pefile.PE(data=data)
+    text, ref_text = ours.sections[0], theirs.sections[0]
+    assert ours.get_data(text.VirtualAddress, I64_MAX) == theirs.get_data(
+        ref_text.VirtualAddress, I64_MAX
+    )
+    assert text.get_data(None, I64_MAX) == ref_text.get_data(None, I64_MAX)
+    assert ours.get_data(0x40, I64_MAX) == theirs.get_data(0x40, I64_MAX)
+
+
+@needs_kernel32
+@pytest.mark.parametrize("value", [I64_MAX, I64_MIN])
+def test_extreme_addresses_never_panic(value):
+    pe = peoxide.PE(data=KERNEL32.read_bytes())
+    section = pe.sections[0]
+    section.get_data(value, I64_MAX)
+    section.get_data(value, None, True)
+    section.get_offset_from_rva(value)
+    section.get_rva_from_offset(value)
+    pe.get_rva_from_offset(value)
+    try:
+        pe.get_data(value, I64_MAX)
+        pe.get_offset_from_rva(value)
+    except peoxide.PEFormatError:
+        pass
+
+
 @needs_kernel32
 def test_random_corruption_never_crashes():
     original = KERNEL32.read_bytes()
