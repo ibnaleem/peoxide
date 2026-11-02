@@ -221,6 +221,27 @@ def test_rva_offset_mapping(pair):
         assert (mine and mine.Name) == (ref and ref.Name), hex(offset)
 
 
+def test_section_data(pair):
+    ours, theirs = pair
+    for mine, ref in zip(ours.sections, theirs.sections):
+        va = ref.VirtualAddress
+        for args in [(), (va + 0x10,), (va, 0x20), (va + 4, None, True), (None, None, True)]:
+            assert mine.get_data(*args) == ref.get_data(*args), (mine.Name, args)
+        assert mine.get_entropy() == pytest.approx(ref.get_entropy(), abs=1e-9), mine.Name
+        for algorithm in ("md5", "sha1", "sha256", "sha512"):
+            method = f"get_hash_{algorithm}"
+            assert getattr(mine, method)() == getattr(ref, method)(), (mine.Name, algorithm)
+
+
+def test_section_contains(pair):
+    ours, theirs = pair
+    for mine, ref in zip(ours.sections, theirs.sections):
+        for rva in probe_rvas(theirs):
+            assert mine.contains_rva(rva) == ref.contains_rva(rva), (mine.Name, hex(rva))
+        for offset in probe_offsets(theirs):
+            assert mine.contains_offset(offset) == ref.contains_offset(offset), (mine.Name, hex(offset))
+
+
 def test_overlay(pair):
     ours, theirs = pair
     assert ours.get_overlay_data_start_offset() == theirs.get_overlay_data_start_offset()
