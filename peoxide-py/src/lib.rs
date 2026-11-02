@@ -136,6 +136,20 @@ impl ImportDescData {
     }
 }
 
+#[pyclass(frozen, get_all, module = "peoxide")]
+struct ExportData {
+    name: Option<Py<PyBytes>>,
+    ordinal: u32,
+    address: u32,
+    forwarder: Option<Py<PyBytes>>,
+}
+
+/// Always present; `symbols` is empty when the file exports nothing.
+#[pyclass(frozen, get_all, module = "peoxide")]
+struct ExportDirData {
+    symbols: Py<PyList>,
+}
+
 /// A parsed PE file. Everything is parsed once, up front, in Rust.
 #[pyclass(frozen, module = "peoxide")]
 struct PE {
@@ -151,6 +165,8 @@ struct PE {
     sections: Py<PyList>,
     #[pyo3(get)]
     DIRECTORY_ENTRY_IMPORT: Py<PyList>,
+    #[pyo3(get)]
+    DIRECTORY_ENTRY_EXPORT: Py<ExportDirData>,
 }
 
 #[pymethods]
@@ -166,6 +182,12 @@ impl PE {
             .iter()
             .map(|d| ImportDescData::new(py, d))
             .collect::<PyResult<Vec<_>>>()?;
+        let symbols = pe.exports.iter().map(|e| ExportData {
+            name: e.name.as_deref().map(|n| bytes(py, n)),
+            ordinal: e.ordinal,
+            address: e.address,
+            forwarder: e.forwarder.as_deref().map(|f| bytes(py, f)),
+        });
 
         Ok(PE {
             DOS_HEADER: Py::new(py, DosHeader::from(&h.dos_header))?,
@@ -174,6 +196,12 @@ impl PE {
             OPTIONAL_HEADER: Py::new(py, OptionalHeader::from(&h.optional_header))?,
             sections: PyList::new(py, sections)?.unbind(),
             DIRECTORY_ENTRY_IMPORT: PyList::new(py, imports)?.unbind(),
+            DIRECTORY_ENTRY_EXPORT: Py::new(
+                py,
+                ExportDirData {
+                    symbols: PyList::new(py, symbols)?.unbind(),
+                },
+            )?,
         })
     }
 }
