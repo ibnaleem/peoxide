@@ -12,195 +12,152 @@ create_exception!(
     "The data is not a valid PE file."
 );
 
-/// A read-only Python class whose integer fields are copied from a peoxide-core struct.
-macro_rules! int_struct {
-    ($name:ident from $core:ty { $($field:ident: $ty:ty = $src:ident),* $(,)? }) => {
+/// Defines a frozen, read-only Python class plus `new(py, core)`, which builds every field
+/// from the given expression. The caller names the `py` and core bindings the expressions use.
+macro_rules! py_class {
+    (
+        $(#[$meta:meta])*
+        $name:ident from $core:ty as ($py:ident, $c:ident) {
+            $($field:ident: $ty:ty = $value:expr),* $(,)?
+        }
+    ) => {
+        $(#[$meta])*
         #[pyclass(frozen, get_all, module = "peoxide")]
         struct $name { $($field: $ty),* }
 
-        impl From<&$core> for $name {
-            fn from(c: &$core) -> Self {
-                Self { $($field: c.$src),* }
+        impl $name {
+            #[allow(unused_variables)]
+            fn new($py: Python<'_>, $c: &$core) -> PyResult<Self> {
+                Ok(Self { $($field: $value),* })
             }
         }
     };
 }
 
-int_struct!(NtHeaders from peoxide_core::Headers {
-    Signature: u32 = signature,
-});
-
-int_struct!(FileHeader from peoxide_core::FileHeader {
-    Machine: u16 = machine,
-    NumberOfSections: u16 = number_of_sections,
-    TimeDateStamp: u32 = time_date_stamp,
-    PointerToSymbolTable: u32 = pointer_to_symbol_table,
-    NumberOfSymbols: u32 = number_of_symbols,
-    SizeOfOptionalHeader: u16 = size_of_optional_header,
-    Characteristics: u16 = characteristics,
-});
-
-int_struct!(OptionalHeader from peoxide_core::OptionalHeader {
-    Magic: u16 = magic,
-    MajorLinkerVersion: u8 = major_linker_version,
-    MinorLinkerVersion: u8 = minor_linker_version,
-    SizeOfCode: u64 = size_of_code,
-    SizeOfInitializedData: u64 = size_of_initialized_data,
-    SizeOfUninitializedData: u64 = size_of_uninitialized_data,
-    AddressOfEntryPoint: u32 = address_of_entry_point,
-    BaseOfCode: u64 = base_of_code,
-    BaseOfData: Option<u32> = base_of_data,
-    ImageBase: u64 = image_base,
-    SectionAlignment: u32 = section_alignment,
-    FileAlignment: u32 = file_alignment,
-    MajorOperatingSystemVersion: u16 = major_operating_system_version,
-    MinorOperatingSystemVersion: u16 = minor_operating_system_version,
-    MajorImageVersion: u16 = major_image_version,
-    MinorImageVersion: u16 = minor_image_version,
-    MajorSubsystemVersion: u16 = major_subsystem_version,
-    MinorSubsystemVersion: u16 = minor_subsystem_version,
-    Reserved1: u32 = win32_version_value,
-    SizeOfImage: u32 = size_of_image,
-    SizeOfHeaders: u32 = size_of_headers,
-    CheckSum: u32 = checksum,
-    Subsystem: u16 = subsystem,
-    DllCharacteristics: u16 = dll_characteristics,
-    SizeOfStackReserve: u64 = size_of_stack_reserve,
-    SizeOfStackCommit: u64 = size_of_stack_commit,
-    SizeOfHeapReserve: u64 = size_of_heap_reserve,
-    SizeOfHeapCommit: u64 = size_of_heap_commit,
-    LoaderFlags: u32 = loader_flags,
-    NumberOfRvaAndSizes: u32 = number_of_rva_and_sizes,
-});
-
 fn bytes(py: Python<'_>, b: &[u8]) -> Py<PyBytes> {
     PyBytes::new(py, b).unbind()
 }
 
-#[pyclass(frozen, get_all, module = "peoxide")]
-struct DosHeader {
-    e_magic: u16,
-    e_cblp: u16,
-    e_cp: u16,
-    e_crlc: u16,
-    e_cparhdr: u16,
-    e_minalloc: u16,
-    e_maxalloc: u16,
-    e_ss: u16,
-    e_sp: u16,
-    e_csum: u16,
-    e_ip: u16,
-    e_cs: u16,
-    e_lfarlc: u16,
-    e_ovno: u16,
-    e_res: Py<PyBytes>,
-    e_oemid: u16,
-    e_oeminfo: u16,
-    e_res2: Py<PyBytes>,
-    e_lfanew: u32,
+fn list<'py, T, C: IntoPyObject<'py>>(
+    py: Python<'py>,
+    items: &[T],
+    new: impl Fn(Python<'py>, &T) -> PyResult<C>,
+) -> PyResult<Py<PyList>> {
+    let objects = items
+        .iter()
+        .map(|i| new(py, i))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(PyList::new(py, objects)?.unbind())
 }
 
-impl DosHeader {
-    fn new(py: Python<'_>, d: &peoxide_core::DosHeader) -> Self {
-        DosHeader {
-            e_magic: d.e_magic,
-            e_cblp: d.e_cblp,
-            e_cp: d.e_cp,
-            e_crlc: d.e_crlc,
-            e_cparhdr: d.e_cparhdr,
-            e_minalloc: d.e_minalloc,
-            e_maxalloc: d.e_maxalloc,
-            e_ss: d.e_ss,
-            e_sp: d.e_sp,
-            e_csum: d.e_csum,
-            e_ip: d.e_ip,
-            e_cs: d.e_cs,
-            e_lfarlc: d.e_lfarlc,
-            e_ovno: d.e_ovno,
-            e_res: bytes(py, &d.e_res),
-            e_oemid: d.e_oemid,
-            e_oeminfo: d.e_oeminfo,
-            e_res2: bytes(py, &d.e_res2),
-            e_lfanew: d.e_lfanew,
-        }
+py_class!(DosHeader from peoxide_core::DosHeader as (py, c) {
+    e_magic: u16 = c.e_magic,
+    e_cblp: u16 = c.e_cblp,
+    e_cp: u16 = c.e_cp,
+    e_crlc: u16 = c.e_crlc,
+    e_cparhdr: u16 = c.e_cparhdr,
+    e_minalloc: u16 = c.e_minalloc,
+    e_maxalloc: u16 = c.e_maxalloc,
+    e_ss: u16 = c.e_ss,
+    e_sp: u16 = c.e_sp,
+    e_csum: u16 = c.e_csum,
+    e_ip: u16 = c.e_ip,
+    e_cs: u16 = c.e_cs,
+    e_lfarlc: u16 = c.e_lfarlc,
+    e_ovno: u16 = c.e_ovno,
+    e_res: Py<PyBytes> = bytes(py, &c.e_res),
+    e_oemid: u16 = c.e_oemid,
+    e_oeminfo: u16 = c.e_oeminfo,
+    e_res2: Py<PyBytes> = bytes(py, &c.e_res2),
+    e_lfanew: u32 = c.e_lfanew,
+});
+
+py_class!(NtHeaders from peoxide_core::Headers as (py, c) {
+    Signature: u32 = c.signature,
+});
+
+py_class!(FileHeader from peoxide_core::FileHeader as (py, c) {
+    Machine: u16 = c.machine,
+    NumberOfSections: u16 = c.number_of_sections,
+    TimeDateStamp: u32 = c.time_date_stamp,
+    PointerToSymbolTable: u32 = c.pointer_to_symbol_table,
+    NumberOfSymbols: u32 = c.number_of_symbols,
+    SizeOfOptionalHeader: u16 = c.size_of_optional_header,
+    Characteristics: u16 = c.characteristics,
+});
+
+py_class!(OptionalHeader from peoxide_core::OptionalHeader as (py, c) {
+    Magic: u16 = c.magic,
+    MajorLinkerVersion: u8 = c.major_linker_version,
+    MinorLinkerVersion: u8 = c.minor_linker_version,
+    SizeOfCode: u64 = c.size_of_code,
+    SizeOfInitializedData: u64 = c.size_of_initialized_data,
+    SizeOfUninitializedData: u64 = c.size_of_uninitialized_data,
+    AddressOfEntryPoint: u32 = c.address_of_entry_point,
+    BaseOfCode: u64 = c.base_of_code,
+    BaseOfData: Option<u32> = c.base_of_data,
+    ImageBase: u64 = c.image_base,
+    SectionAlignment: u32 = c.section_alignment,
+    FileAlignment: u32 = c.file_alignment,
+    MajorOperatingSystemVersion: u16 = c.major_operating_system_version,
+    MinorOperatingSystemVersion: u16 = c.minor_operating_system_version,
+    MajorImageVersion: u16 = c.major_image_version,
+    MinorImageVersion: u16 = c.minor_image_version,
+    MajorSubsystemVersion: u16 = c.major_subsystem_version,
+    MinorSubsystemVersion: u16 = c.minor_subsystem_version,
+    Reserved1: u32 = c.win32_version_value,
+    SizeOfImage: u32 = c.size_of_image,
+    SizeOfHeaders: u32 = c.size_of_headers,
+    CheckSum: u32 = c.checksum,
+    Subsystem: u16 = c.subsystem,
+    DllCharacteristics: u16 = c.dll_characteristics,
+    SizeOfStackReserve: u64 = c.size_of_stack_reserve,
+    SizeOfStackCommit: u64 = c.size_of_stack_commit,
+    SizeOfHeapReserve: u64 = c.size_of_heap_reserve,
+    SizeOfHeapCommit: u64 = c.size_of_heap_commit,
+    LoaderFlags: u32 = c.loader_flags,
+    NumberOfRvaAndSizes: u32 = c.number_of_rva_and_sizes,
+});
+
+py_class!(Section from peoxide_core::Section as (py, c) {
+    Name: Py<PyBytes> = bytes(py, &c.name),
+    Misc_VirtualSize: u32 = c.virtual_size,
+    VirtualAddress: u32 = c.virtual_address,
+    SizeOfRawData: u32 = c.size_of_raw_data,
+    PointerToRawData: u32 = c.pointer_to_raw_data,
+    PointerToRelocations: u32 = c.pointer_to_relocations,
+    PointerToLinenumbers: u32 = c.pointer_to_linenumbers,
+    NumberOfRelocations: u16 = c.number_of_relocations,
+    NumberOfLinenumbers: u16 = c.number_of_linenumbers,
+    Characteristics: u32 = c.characteristics,
+});
+
+py_class!(ImportData from peoxide_core::ImportSymbol as (py, c) {
+    name: Option<Py<PyBytes>> = c.name.as_deref().map(|n| bytes(py, n)),
+    hint: Option<u16> = c.hint,
+    ordinal: Option<u16> = c.ordinal,
+    import_by_ordinal: bool = c.ordinal.is_some(),
+    address: u64 = c.address,
+});
+
+py_class!(ImportDescData from peoxide_core::ImportDll as (py, c) {
+    dll: Py<PyBytes> = bytes(py, &c.dll),
+    imports: Py<PyList> = list(py, &c.imports, ImportData::new)?,
+});
+
+py_class!(ExportData from peoxide_core::ExportSymbol as (py, c) {
+    name: Option<Py<PyBytes>> = c.name.as_deref().map(|n| bytes(py, n)),
+    ordinal: u32 = c.ordinal,
+    address: u32 = c.address,
+    forwarder: Option<Py<PyBytes>> = c.forwarder.as_deref().map(|f| bytes(py, f)),
+});
+
+py_class!(
+    /// Always present; `symbols` is empty when the file exports nothing.
+    ExportDirData from [peoxide_core::ExportSymbol] as (py, c) {
+        symbols: Py<PyList> = list(py, c, ExportData::new)?,
     }
-}
-
-#[pyclass(frozen, get_all, module = "peoxide")]
-struct Section {
-    Name: Py<PyBytes>,
-    Misc_VirtualSize: u32,
-    VirtualAddress: u32,
-    SizeOfRawData: u32,
-    PointerToRawData: u32,
-    PointerToRelocations: u32,
-    PointerToLinenumbers: u32,
-    NumberOfRelocations: u16,
-    NumberOfLinenumbers: u16,
-    Characteristics: u32,
-}
-
-impl Section {
-    fn new(py: Python<'_>, s: &peoxide_core::Section) -> Self {
-        Section {
-            Name: bytes(py, &s.name),
-            Misc_VirtualSize: s.virtual_size,
-            VirtualAddress: s.virtual_address,
-            SizeOfRawData: s.size_of_raw_data,
-            PointerToRawData: s.pointer_to_raw_data,
-            PointerToRelocations: s.pointer_to_relocations,
-            PointerToLinenumbers: s.pointer_to_linenumbers,
-            NumberOfRelocations: s.number_of_relocations,
-            NumberOfLinenumbers: s.number_of_linenumbers,
-            Characteristics: s.characteristics,
-        }
-    }
-}
-
-#[pyclass(frozen, get_all, module = "peoxide")]
-struct ImportData {
-    name: Option<Py<PyBytes>>,
-    hint: Option<u16>,
-    ordinal: Option<u16>,
-    import_by_ordinal: bool,
-    address: u64,
-}
-
-#[pyclass(frozen, get_all, module = "peoxide")]
-struct ImportDescData {
-    dll: Py<PyBytes>,
-    imports: Py<PyList>,
-}
-
-impl ImportDescData {
-    fn new(py: Python<'_>, d: &peoxide_core::ImportDll) -> PyResult<Self> {
-        let imports = d.imports.iter().map(|i| ImportData {
-            name: i.name.as_deref().map(|n| bytes(py, n)),
-            hint: i.hint,
-            ordinal: i.ordinal,
-            import_by_ordinal: i.ordinal.is_some(),
-            address: i.address,
-        });
-        Ok(ImportDescData {
-            dll: bytes(py, &d.dll),
-            imports: PyList::new(py, imports)?.unbind(),
-        })
-    }
-}
-
-#[pyclass(frozen, get_all, module = "peoxide")]
-struct ExportData {
-    name: Option<Py<PyBytes>>,
-    ordinal: u32,
-    address: u32,
-    forwarder: Option<Py<PyBytes>>,
-}
-
-/// Always present; `symbols` is empty when the file exports nothing.
-#[pyclass(frozen, get_all, module = "peoxide")]
-struct ExportDirData {
-    symbols: Py<PyList>,
-}
+);
 
 /// A parsed PE file. Everything is parsed once, up front, in Rust.
 #[pyclass(frozen, module = "peoxide")]
@@ -246,32 +203,15 @@ impl PE {
         };
         let pe = peoxide_core::parse(data).map_err(|e| PEFormatError::new_err(e.to_string()))?;
         let h = &pe.headers;
-        let sections = pe.sections.iter().map(|s| Section::new(py, s));
-        let imports = pe
-            .imports
-            .iter()
-            .map(|d| ImportDescData::new(py, d))
-            .collect::<PyResult<Vec<_>>>()?;
-        let symbols = pe.exports.iter().map(|e| ExportData {
-            name: e.name.as_deref().map(|n| bytes(py, n)),
-            ordinal: e.ordinal,
-            address: e.address,
-            forwarder: e.forwarder.as_deref().map(|f| bytes(py, f)),
-        });
 
         Ok(PE {
-            DOS_HEADER: Py::new(py, DosHeader::new(py, &h.dos_header))?,
-            NT_HEADERS: Py::new(py, NtHeaders::from(h))?,
-            FILE_HEADER: Py::new(py, FileHeader::from(&h.file_header))?,
-            OPTIONAL_HEADER: Py::new(py, OptionalHeader::from(&h.optional_header))?,
-            sections: PyList::new(py, sections)?.unbind(),
-            DIRECTORY_ENTRY_IMPORT: PyList::new(py, imports)?.unbind(),
-            DIRECTORY_ENTRY_EXPORT: Py::new(
-                py,
-                ExportDirData {
-                    symbols: PyList::new(py, symbols)?.unbind(),
-                },
-            )?,
+            DOS_HEADER: Py::new(py, DosHeader::new(py, &h.dos_header)?)?,
+            NT_HEADERS: Py::new(py, NtHeaders::new(py, h)?)?,
+            FILE_HEADER: Py::new(py, FileHeader::new(py, &h.file_header)?)?,
+            OPTIONAL_HEADER: Py::new(py, OptionalHeader::new(py, &h.optional_header)?)?,
+            sections: list(py, &pe.sections, Section::new)?,
+            DIRECTORY_ENTRY_IMPORT: list(py, &pe.imports, ImportDescData::new)?,
+            DIRECTORY_ENTRY_EXPORT: Py::new(py, ExportDirData::new(py, &pe.exports)?)?,
         })
     }
 }
