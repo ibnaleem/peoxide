@@ -442,6 +442,8 @@ struct PE {
     DIRECTORY_ENTRY_IMPORT: Py<PyList>,
     #[pyo3(get)]
     DIRECTORY_ENTRY_EXPORT: Py<ExportDirData>,
+    #[pyo3(get)]
+    DIRECTORY_ENTRY_DELAY_IMPORT: Py<PyList>,
     pe: peoxide_core::Pe,
     data: Py<PyBytes>,
 }
@@ -484,6 +486,7 @@ impl PE {
             .unbind(),
             DIRECTORY_ENTRY_IMPORT: list(py, &pe.imports, ImportDescData::new)?,
             DIRECTORY_ENTRY_EXPORT: Py::new(py, ExportDirData::new(py, &pe.exports)?)?,
+            DIRECTORY_ENTRY_DELAY_IMPORT: list(py, &pe.delay_imports, ImportDescData::new)?,
             pe,
             data: data.unbind(),
         })
