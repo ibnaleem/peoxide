@@ -1,4 +1,6 @@
+mod address;
 mod headers;
+pub use address::{SectionLayout, clamp};
 pub use goblin::error::Error;
 pub use goblin::pe::data_directories::DataDirectory;
 pub use goblin::pe::section_table::SectionTable as Section;
@@ -12,7 +14,12 @@ use goblin::pe::{characteristic, subsystem};
 
 pub struct Pe {
     pub headers: Headers,
+    /// Sorted by `virtual_address`.
     pub sections: Vec<Section>,
+    /// One per entry of `sections`, in the same order.
+    pub layouts: Vec<SectionLayout>,
+    pub file_size: usize,
+    pub header_size: i64,
     pub imports: Vec<ImportDll>,
     pub exports: Vec<ExportSymbol>,
 }
@@ -96,6 +103,9 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
     // pefile orders sections by VirtualAddress, not by section-table position.
     sections.sort_by_key(|s| s.virtual_address);
     Ok(Pe {
+        layouts: address::section_layouts(&sections, &headers, data.len()),
+        header_size: address::header_size(&headers, &sections),
+        file_size: data.len(),
         headers,
         sections,
         imports,
@@ -233,6 +243,23 @@ mod tests {
             .find(|e| e.name.as_deref() == Some(b"CreateFileW"))
             .expect("kernel32 exports CreateFileW");
         assert!(create_file.address != 0);
+    }
+
+    #[test]
+    fn maps_rvas_and_offsets_through_sections() {
+        let data = std::fs::read(KERNEL32).unwrap();
+        let pe = parse(&data).unwrap();
+        let text = &pe.sections[0];
+        let rva = text.virtual_address as i64 + 0x10;
+        let offset = pe.offset_from_rva(rva).unwrap();
+        assert_eq!(offset, text.pointer_to_raw_data as i64 + 0x10);
+        assert_eq!(pe.rva_from_offset(offset), Some(rva));
+        assert_eq!(pe.section_by_rva(rva), Some(0));
+
+        let range = pe.data_range(rva, Some(4)).unwrap();
+        assert_eq!(range, offset as usize..offset as usize + 4);
+        assert_eq!(&data[pe.data_range(0, Some(2)).unwrap()], b"MZ");
+        assert!(pe.data_range(data.len() as i64 + 0x10_0000, None).is_none());
     }
 
     #[test]
