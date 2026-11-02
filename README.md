@@ -66,6 +66,7 @@ Everything is parsed up front, and every attribute below is read-only.
 | `OPTIONAL_HEADER` | Every PE32 and PE32+ field, from `Magic` to `NumberOfRvaAndSizes`. `BaseOfData` is `None` on PE32+. `DATA_DIRECTORY` lists each directory's `name`, `VirtualAddress` and `Size`. |
 | `sections` | List of sections with `Name` (8 raw bytes), `Misc_VirtualSize`, `VirtualAddress`, `SizeOfRawData`, `PointerToRawData`, `PointerToRelocations`, `PointerToLinenumbers`, `NumberOfRelocations`, `NumberOfLinenumbers`, `Characteristics` |
 | `DIRECTORY_ENTRY_IMPORT` | List of imported DLLs, each with `dll` (bytes) and `imports`. Each import has `name` (bytes or `None`), `hint`, `ordinal`, `import_by_ordinal` and `address` (the IAT slot's virtual address). |
+| `DIRECTORY_ENTRY_DELAY_IMPORT` | Delay-loaded DLLs, in the same shape as `DIRECTORY_ENTRY_IMPORT`. Empty when the file has none. |
 | `DIRECTORY_ENTRY_EXPORT` | Has `symbols`, a list where each symbol has `name` (bytes or `None`), `ordinal`, `address` (RVA) and `forwarder` (bytes or `None`). |
 
 Flags read as booleans, as in pefile. `FILE_HEADER.IMAGE_FILE_DLL`,
@@ -118,7 +119,8 @@ the two disagree in these cases:
 - **`get_exphash()` on those two kinds of file.** It hashes the full export list, so it differs from pefile's wherever pefile capped the table or truncated a name.
 - **Files with no imports or exports.** pefile leaves `DIRECTORY_ENTRY_IMPORT` and `DIRECTORY_ENTRY_EXPORT` undefined. peoxide always defines them, as an empty list and an object with an empty `symbols` list, so loops work without a `hasattr` check.
 - **Section reads that start before the section.** `section.get_data(start)` with `start` below the section's address gives pefile a negative offset, which Python treats as counting from the end of the file. peoxide clamps it to the start of the file instead.
-- **Scope.** peoxide does not parse resources, the Rich header, relocations, debug data or the delay-import table, and it cannot modify or write PE files.
+- **Corrupt delay-import thunk tables.** pefile gives up on a thunk table that repeats one address 15 times or spreads its addresses over more than 128 MB. peoxide does not apply those two heuristics, so on such a table it may return entries where pefile returns none.
+- **Scope.** peoxide does not parse resources, the Rich header, relocations or debug data, and it cannot modify or write PE files.
 
 ## Correctness
 
@@ -143,15 +145,16 @@ and then reading every header, section, import and export back out, so a parser 
 by deferring work. Before timing, it checks that peoxide's results equal pefile's on every file.
 Garbage collection is disabled while timing, parser order is shuffled per file, one warm-up round
 is discarded, and the median round is reported. pefile is timed twice. Once it is limited to the
-work peoxide does (headers, sections, imports, exports), and once it runs its default full parse.
+work peoxide does (headers, sections, imports, delay imports, exports), and once it runs its
+default full parse.
 
 Results for the 75 DLLs in `C:\Windows\System32\wbem` (25 MB, 3 rounds, release build, one Windows 11 machine):
 
 | Parser | Total | Per file | vs peoxide |
 |---|---:|---:|---:|
-| peoxide | 13.9 ms | 0.185 ms | 1.0x |
-| pefile (headers + imports + exports) | 278.5 ms | 3.713 ms | 20.0x |
-| pefile (default full parse) | 2,988.3 ms | 39.844 ms | 215.0x |
+| peoxide | 14.4 ms | 0.192 ms | 1.0x |
+| pefile (same work as peoxide) | 296.5 ms | 3.953 ms | 20.6x |
+| pefile (default full parse) | 3,063.6 ms | 40.848 ms | 212.5x |
 
 The scoped row is the fair comparison. The full-parse row is what you get from a plain
 `pefile.PE(path)`, which also parses resources, relocations, debug data and more.
