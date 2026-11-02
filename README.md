@@ -69,6 +69,7 @@ Everything is parsed up front, and every attribute below is read-only.
 | `DIRECTORY_ENTRY_DELAY_IMPORT` | Delay-loaded DLLs, in the same shape as `DIRECTORY_ENTRY_IMPORT`. Empty when the file has none. |
 | `DIRECTORY_ENTRY_DEBUG` | Debug records, each with `struct` (`Characteristics`, `TimeDateStamp`, `MajorVersion`, `MinorVersion`, `Type`, `SizeOfData`, `AddressOfRawData`, `PointerToRawData`) and `entry`. CodeView records decode to `entry.PdbFileName`, `entry.Age`, the GUID fields and pefile's `entry.Signature_String`, and type 20 decodes to `entry.ExDllCharacteristics` with its `IMAGE_DLLCHARACTERISTICS_EX_*` flags. Other types have `entry` set to `None`. |
 | `DIRECTORY_ENTRY_BASERELOC` | Base relocation blocks, each with `struct` (`VirtualAddress`, `SizeOfBlock`) and `entries`. Each entry has `type`, `rva` and `base_rva`. Built on first access, because large DLLs carry tens of thousands of entries. Empty when the file has none. |
+| `DIRECTORY_ENTRY_RESOURCE` | The resource tree's root, or `None` when the file has no readable resource directory. A directory has `struct` (`Characteristics`, `TimeDateStamp`, `MajorVersion`, `MinorVersion`, `NumberOfNamedEntries`, `NumberOfIdEntries`) and `entries`. Each entry has `struct` (`Name`, `OffsetToData`, `NameOffset`, `Id`, `DataIsDirectory`, `OffsetToDirectory`), `name` (with `string`, `decode()` and `str()`, or `None` for ID entries), `id`, and either `directory` or `data`. A `data` leaf has `struct` (`OffsetToData`, `Size`, `CodePage`, `Reserved`), `lang` and `sublang`. Read a leaf's bytes with `pe.get_data(leaf.data.struct.OffsetToData, leaf.data.struct.Size)`. Built on first access. |
 | `RICH_HEADER` | The decoded Rich header, with `checksum`, `values` (flattened `comp_id, count` pairs), `key`, `raw_data` and `clear_data`, or `None` when the file has none. |
 | `DIRECTORY_ENTRY_EXPORT` | Has `symbols`, a list where each symbol has `name` (bytes or `None`), `ordinal`, `address` (RVA) and `forwarder` (bytes or `None`). |
 
@@ -126,7 +127,8 @@ the two disagree in these cases:
 - **Corrupt delay-import thunk tables.** pefile gives up on a thunk table that repeats one address 15 times or spreads its addresses over more than 128 MB. peoxide does not apply those two heuristics, so on such a table it may return entries where pefile returns none.
 - **IMAGE_DEBUG_TYPE_MISC records.** pefile decodes these pre-PDB debug records. peoxide leaves their `entry` as `None`.
 - **Relocation entries.** They carry `type`, `rva` and `base_rva` but not pefile's per-entry `struct`. `DIRECTORY_ENTRY_BASERELOC` is an empty list, not undefined, when there are no relocations.
-- **Scope.** peoxide does not parse resources, and it cannot modify or write PE files.
+- **Resource strings and version information.** pefile also decodes RT_STRING tables into `directory.strings` and RT_VERSION into `FileInfo`, `StringTable` and `VS_FIXEDFILEINFO`. peoxide parses the resource tree only, and `DIRECTORY_ENTRY_RESOURCE` is `None`, not undefined, when the file has no readable resource directory.
+- **Scope.** peoxide cannot modify or write PE files.
 
 ## Correctness
 

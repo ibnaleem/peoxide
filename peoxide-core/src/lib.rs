@@ -6,7 +6,9 @@ mod headers;
 mod imphash;
 mod ordinals;
 mod reloc;
+mod resource;
 pub use reloc::{Relocation, RelocationBlock};
+pub use resource::{ResourceChild, ResourceData, ResourceDirectory, ResourceEntry};
 mod rich;
 pub use address::{SectionLayout, clamp, entropy};
 pub use goblin::error::Error;
@@ -36,6 +38,8 @@ pub struct Pe {
     pub debug: Vec<DebugDirectory>,
     pub rich_header: Option<RichHeader>,
     pub relocations: Vec<RelocationBlock>,
+    /// `None` where pefile leaves `DIRECTORY_ENTRY_RESOURCE` undefined.
+    pub resources: Option<ResourceDirectory>,
 }
 
 pub struct ImportDll {
@@ -129,11 +133,13 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
         debug: Vec::new(),
         rich_header: rich::parse(data, optional_header_offset),
         relocations: Vec::new(),
+        resources: None,
     };
     // These directories are read through RVAs, which need the section layouts above.
     pe.delay_imports = pe.parse_delay_imports(data);
     pe.debug = pe.parse_debug_directory(data);
     pe.relocations = pe.parse_relocations(data);
+    pe.resources = pe.parse_resources(data);
     Ok(pe)
 }
 

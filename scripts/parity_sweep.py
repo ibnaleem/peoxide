@@ -23,6 +23,7 @@ DIRECTORIES = [
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DEBUG"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BASERELOC"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"],
 ]
 DEBUG_FIELDS = ["Characteristics", "TimeDateStamp", "Type", "SizeOfData", "PointerToRawData"]
 CODEVIEW_FIELDS = ["Signature_String", "Age", "PdbFileName", "CvHeaderSignature", "Signature"]
@@ -114,7 +115,29 @@ def details(pe, rvas, offsets):
             for b in getattr(pe, "DIRECTORY_ENTRY_BASERELOC", [])
         ],
         "rich header": rich_header(pe),
+        "resources": resource_tree(getattr(pe, "DIRECTORY_ENTRY_RESOURCE", None)),
     }
+
+
+def resource_tree(directory):
+    if directory is None:
+        return None
+    return (
+        directory.struct.NumberOfNamedEntries,
+        directory.struct.NumberOfIdEntries,
+        [
+            (
+                e.struct.Name,
+                e.struct.OffsetToData,
+                e.name and e.name.string,
+                e.id,
+                resource_tree(e.directory)
+                if hasattr(e, "directory")
+                else (e.data.struct.OffsetToData, e.data.struct.Size, e.data.lang, e.data.sublang),
+            )
+            for e in directory.entries
+        ],
+    )
 
 
 RICH_FIELDS = ["checksum", "values", "key", "raw_data", "clear_data"]
