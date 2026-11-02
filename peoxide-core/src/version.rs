@@ -338,3 +338,88 @@ impl Pe {
         file_info.push(blocks);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dword_align_keeps_pefile_mask() {
+        assert_eq!(dword_align(5, 0), 8);
+        // Aligns base + offset, not the offset alone.
+        assert_eq!(dword_align(4, 2), 8);
+        assert_eq!(dword_align(0xFFFF_FFFF, 0), 0);
+    }
+
+    #[test]
+    fn py_slice_follows_python() {
+        let data = b"abcdef";
+        assert_eq!(py_slice(data, 2, Some(4)), b"cd");
+        assert_eq!(py_slice(data, -2, None), b"ef");
+        assert_eq!(py_slice(data, 4, Some(2)), b"");
+        assert_eq!(py_slice(data, 10, None), b"");
+        assert_eq!(py_slice(data, -10, Some(-4)), b"ab");
+    }
+
+    #[test]
+    fn short_headers_are_none() {
+        assert!(block_header(b"\x01\x00\x02\x00\x03", 0).is_none());
+        let header = block_header(b"\x01\x00\x02\x00\x03\x00", 0).unwrap();
+        assert_eq!(
+            (header.length, header.value_length, header.type_),
+            (1, 2, 3)
+        );
+        assert!(fixed_file_info(&[0; 51], 0).is_none());
+    }
+
+    #[test]
+    fn repeated_key_keeps_first_place() {
+        let mut entries = Vec::new();
+        insert(&mut entries, b"a".to_vec(), b"1".to_vec());
+        insert(&mut entries, b"b".to_vec(), b"2".to_vec());
+        insert(&mut entries, b"a".to_vec(), b"3".to_vec());
+        assert_eq!(
+            entries,
+            vec![
+                (b"a".to_vec(), b"3".to_vec()),
+                (b"b".to_vec(), b"2".to_vec())
+            ]
+        );
+    }
+
+    /// Values pefile 2024.8.26 reports for this machine's kernel32.dll.
+    #[test]
+    fn kernel32_version_matches_pefile() {
+        let data = std::fs::read(r"C:\Windows\System32\kernel32.dll").unwrap();
+        let pe = crate::parse(&data).unwrap();
+        let info = &pe.version.vs_versioninfo.as_ref().unwrap()[0];
+        assert_eq!(
+            (
+                info.header.length,
+                info.header.value_length,
+                info.header.type_
+            ),
+            (928, 52, 0)
+        );
+        assert_eq!(
+            pe.version.vs_fixedfileinfo.as_ref().unwrap()[0].signature,
+            0xFEEF04BD
+        );
+        let [strings, vars] = pe.version.file_info.as_ref().unwrap()[0].as_slice() else {
+            panic!("expected StringFileInfo and VarFileInfo");
+        };
+        assert_eq!(strings.key, b"StringFileInfo");
+        let table = &strings.string_table.as_ref().unwrap()[0];
+        assert_eq!(table.lang_id, b"040904B0");
+        assert_eq!(
+            table.entries[0],
+            (b"CompanyName".to_vec(), b"Microsoft Corporation".to_vec())
+        );
+        assert_eq!(vars.key, b"VarFileInfo");
+        let entry = vars.var.as_ref().unwrap()[0].entry.as_ref().unwrap();
+        assert_eq!(
+            entry,
+            &(b"Translation".to_vec(), "0x0409 0x04b0".to_string())
+        );
+    }
+}
