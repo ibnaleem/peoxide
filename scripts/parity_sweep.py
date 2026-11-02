@@ -96,6 +96,11 @@ def differences(ours, reference):
     capped = any("Assuming corrupt" in w for w in reference.get_warnings())
     ours_summary = summarize(ours, len(theirs_summary["exports"]) if capped else None)
     ours_summary |= details(ours, rvas, offsets)
+    theirs_summary["imphash"], ours_summary["imphash"] = reference.get_imphash(), ours.get_imphash()
+    export_dir = getattr(reference, "DIRECTORY_ENTRY_EXPORT", None)
+    names = [s.name for s in export_dir.symbols] if export_dir else []
+    if not capped and all(n is None or len(n) < pefile.MAX_SYMBOL_NAME_LENGTH for n in names):
+        theirs_summary["exphash"], ours_summary["exphash"] = reference.get_exphash(), ours.get_exphash()
     return [key for key in ours_summary if ours_summary[key] != theirs_summary[key]]
 
 
