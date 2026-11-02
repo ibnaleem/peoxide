@@ -1,7 +1,7 @@
 #![allow(non_snake_case)] // Python attribute names follow pefile (e_lfanew, NumberOfSections, ...)
 
 use pyo3::create_exception;
-use pyo3::exceptions::PyException;
+use pyo3::exceptions::{PyException, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList};
 
@@ -179,10 +179,28 @@ struct PE {
 
 #[pymethods]
 impl PE {
+    /// Parse a PE file from a path (`name`) or from in-memory bytes (`data`).
     #[new]
-    fn new(py: Python<'_>, name: std::path::PathBuf) -> PyResult<Self> {
-        let data = std::fs::read(name)?;
-        let pe = peoxide_core::parse(&data).map_err(|e| PEFormatError::new_err(e.to_string()))?;
+    #[pyo3(signature = (name=None, data=None))]
+    fn new(
+        py: Python<'_>,
+        name: Option<std::path::PathBuf>,
+        data: Option<&[u8]>,
+    ) -> PyResult<Self> {
+        let owned;
+        let data = match (name, data) {
+            (Some(path), None) => {
+                owned = std::fs::read(path)?;
+                &owned[..]
+            }
+            (None, Some(data)) => data,
+            _ => {
+                return Err(PyTypeError::new_err(
+                    "PE() takes exactly one of name or data",
+                ));
+            }
+        };
+        let pe = peoxide_core::parse(data).map_err(|e| PEFormatError::new_err(e.to_string()))?;
         let h = &pe.headers;
         let sections = pe.sections.iter().map(|s| Section::new(py, s));
         let imports = pe
