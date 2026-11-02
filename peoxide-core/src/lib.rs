@@ -1,10 +1,13 @@
 mod address;
 mod headers;
+mod imphash;
+mod ordinals;
 pub use address::{SectionLayout, clamp, entropy};
 pub use goblin::error::Error;
 pub use goblin::pe::data_directories::DataDirectory;
 pub use goblin::pe::section_table::SectionTable as Section;
 pub use headers::*;
+pub use imphash::ordinal_name;
 
 use goblin::pe::PE;
 use goblin::pe::export::ExportAddressTableEntry;
@@ -273,6 +276,23 @@ mod tests {
         assert_eq!(entropy(b""), 0.0);
         assert_eq!(entropy(b"aaaa"), 0.0);
         assert_eq!(entropy(&[0, 1, 2, 3]), 2.0);
+    }
+
+    #[test]
+    fn builds_imphash_and_exphash_inputs() {
+        assert_eq!(ordinal_name(b"OLEAUT32.dll", 2), b"SysAllocString");
+        assert_eq!(ordinal_name(b"oleaut32.dll", 65000), b"ord65000");
+        assert_eq!(ordinal_name(b"custom.dll", 7), b"ord7");
+
+        let pe = parse(&std::fs::read(KERNEL32).unwrap()).unwrap();
+        let imports = pe.imphash_input().unwrap();
+        assert!(
+            imports
+                .split(',')
+                .all(|pair| pair.contains('.') && pair == pair.to_lowercase())
+        );
+        assert!(!imports.contains(".dll."), "known extensions are stripped");
+        assert!(pe.exphash_input().unwrap().contains("createfilew"));
     }
 
     #[test]
