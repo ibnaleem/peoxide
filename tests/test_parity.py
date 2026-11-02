@@ -221,6 +221,19 @@ def test_rva_offset_mapping(pair):
         assert (mine and mine.Name) == (ref and ref.Name), hex(offset)
 
 
+def test_overlay(pair):
+    ours, theirs = pair
+    assert ours.get_overlay_data_start_offset() == theirs.get_overlay_data_start_offset()
+    assert ours.get_overlay() == theirs.get_overlay()
+
+
+def test_appended_data_is_overlay():
+    data = CORPUS[0].read_bytes() + b"appended overlay"
+    ours, theirs = peoxide.PE(data=data), pefile.PE(data=data)
+    assert ours.get_overlay() == theirs.get_overlay()
+    assert ours.get_overlay().endswith(b"appended overlay")
+
+
 def test_imports(pair):
     ours, theirs = pair
     expected = getattr(theirs, "DIRECTORY_ENTRY_IMPORT", [])
