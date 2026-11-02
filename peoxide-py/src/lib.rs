@@ -243,6 +243,122 @@ py_class!(
     }
 );
 
+py_class!(DebugDirectory from peoxide_core::DebugDirectory as (py, c) {
+    Characteristics: u32 = c.characteristics,
+    TimeDateStamp: u32 = c.time_date_stamp,
+    MajorVersion: u16 = c.major_version,
+    MinorVersion: u16 = c.minor_version,
+    Type: u32 = c.debug_type,
+    SizeOfData: u32 = c.size_of_data,
+    AddressOfRawData: u32 = c.address_of_raw_data,
+    PointerToRawData: u32 = c.pointer_to_raw_data,
+});
+
+#[pyclass(frozen, get_all, module = "peoxide")]
+struct CvInfoPdb70 {
+    CvSignature: Py<PyBytes>,
+    Signature_Data1: u32,
+    Signature_Data2: u16,
+    Signature_Data3: u16,
+    Signature_Data4: u8,
+    Signature_Data5: u8,
+    Signature_Data6: Py<PyBytes>,
+    Signature_Data6_value: u64,
+    Signature_String: String,
+    Age: u32,
+    PdbFileName: Option<Py<PyBytes>>,
+}
+
+#[pyclass(frozen, get_all, module = "peoxide")]
+struct CvInfoPdb20 {
+    CvHeaderSignature: u32,
+    CvHeaderOffset: u32,
+    Signature: u32,
+    Age: u32,
+    PdbFileName: Option<Py<PyBytes>>,
+}
+
+#[pyclass(frozen, get_all, module = "peoxide")]
+struct ExDllCharacteristics {
+    ExDllCharacteristics: u32,
+}
+
+fn debug_entry(py: Python<'_>, entry: &peoxide_core::DebugEntry) -> PyResult<Py<PyAny>> {
+    use peoxide_core::DebugEntry as E;
+    let name = |n: &Option<Vec<u8>>| n.as_deref().map(|n| bytes(py, n));
+    Ok(match entry {
+        E::Pdb70 {
+            cv_signature,
+            guid_data1,
+            guid_data2,
+            guid_data3,
+            guid_data4,
+            guid_data5,
+            guid_data6,
+            age,
+            pdb_file_name,
+        } => Py::new(
+            py,
+            CvInfoPdb70 {
+                CvSignature: bytes(py, cv_signature),
+                Signature_Data1: *guid_data1,
+                Signature_Data2: *guid_data2,
+                Signature_Data3: *guid_data3,
+                Signature_Data4: *guid_data4,
+                Signature_Data5: *guid_data5,
+                Signature_Data6: bytes(py, guid_data6),
+                Signature_Data6_value: guid_data6.iter().fold(0, |v, &b| (v << 8) | b as u64),
+                Signature_String: entry.pdb70_signature_string().unwrap_or_default(),
+                Age: *age,
+                PdbFileName: name(pdb_file_name),
+            },
+        )?
+        .into_any(),
+        E::Pdb20 {
+            cv_header_signature,
+            cv_header_offset,
+            signature,
+            age,
+            pdb_file_name,
+        } => Py::new(
+            py,
+            CvInfoPdb20 {
+                CvHeaderSignature: *cv_header_signature,
+                CvHeaderOffset: *cv_header_offset,
+                Signature: *signature,
+                Age: *age,
+                PdbFileName: name(pdb_file_name),
+            },
+        )?
+        .into_any(),
+        E::ExDllCharacteristics(value) => Py::new(
+            py,
+            ExDllCharacteristics {
+                ExDllCharacteristics: *value,
+            },
+        )?
+        .into_any(),
+    })
+}
+
+#[pyclass(frozen, module = "peoxide")]
+struct DebugData {
+    #[pyo3(get, name = "struct")]
+    structure: Py<DebugDirectory>,
+    /// `None` for debug types peoxide does not decode.
+    #[pyo3(get)]
+    entry: Option<Py<PyAny>>,
+}
+
+impl DebugData {
+    fn new(py: Python<'_>, d: &peoxide_core::DebugDirectory) -> PyResult<Self> {
+        Ok(DebugData {
+            structure: Py::new(py, DebugDirectory::new(py, d)?)?,
+            entry: d.entry.as_ref().map(|e| debug_entry(py, e)).transpose()?,
+        })
+    }
+}
+
 type Flags = &'static [(&'static str, u32)];
 
 /// pefile's flag tables: each name reads as `bool(field & mask)`.
@@ -336,6 +452,34 @@ fn flag(flags: Flags, field: u32, class: &str, name: &str) -> PyResult<bool> {
         .ok_or_else(|| {
             PyAttributeError::new_err(format!("'{class}' object has no attribute '{name}'"))
         })
+}
+
+const EX_DLL_CHARACTERISTICS_FLAGS: Flags = &[
+    ("IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT", 0x0001),
+    ("IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT_STRICT_MODE", 0x0002),
+    (
+        "IMAGE_DLLCHARACTERISTICS_EX_CET_SET_CONTEXT_IP_VALIDATION_RELAXED_MODE",
+        0x0004,
+    ),
+    (
+        "IMAGE_DLLCHARACTERISTICS_EX_CET_DYNAMIC_APIS_ALLOW_IN_PROC",
+        0x0008,
+    ),
+    ("IMAGE_DLLCHARACTERISTICS_EX_CET_RESERVED_1", 0x0010),
+    ("IMAGE_DLLCHARACTERISTICS_EX_CET_RESERVED_2", 0x0020),
+];
+
+#[pymethods]
+impl ExDllCharacteristics {
+    fn __getattr__(&self, name: &str) -> PyResult<bool> {
+        let field = self.ExDllCharacteristics;
+        flag(
+            EX_DLL_CHARACTERISTICS_FLAGS,
+            field,
+            "ExDllCharacteristics",
+            name,
+        )
+    }
 }
 
 #[pymethods]
@@ -444,6 +588,8 @@ struct PE {
     DIRECTORY_ENTRY_EXPORT: Py<ExportDirData>,
     #[pyo3(get)]
     DIRECTORY_ENTRY_DELAY_IMPORT: Py<PyList>,
+    #[pyo3(get)]
+    DIRECTORY_ENTRY_DEBUG: Py<PyList>,
     pe: peoxide_core::Pe,
     data: Py<PyBytes>,
 }
@@ -487,6 +633,7 @@ impl PE {
             DIRECTORY_ENTRY_IMPORT: list(py, &pe.imports, ImportDescData::new)?,
             DIRECTORY_ENTRY_EXPORT: Py::new(py, ExportDirData::new(py, &pe.exports)?)?,
             DIRECTORY_ENTRY_DELAY_IMPORT: list(py, &pe.delay_imports, ImportDescData::new)?,
+            DIRECTORY_ENTRY_DEBUG: list(py, &pe.debug, DebugData::new)?,
             pe,
             data: data.unbind(),
         })
