@@ -1,7 +1,7 @@
 #![allow(non_snake_case)] // Python attribute names follow pefile (e_lfanew, NumberOfSections, ...)
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyException, PyTypeError};
+use pyo3::exceptions::{PyAttributeError, PyException, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList};
 
@@ -188,6 +188,128 @@ py_class!(
         symbols: Py<PyList> = list(py, c, ExportData::new)?,
     }
 );
+
+type Flags = &'static [(&'static str, u32)];
+
+/// pefile's flag tables: each name reads as `bool(field & mask)`.
+const IMAGE_FILE_FLAGS: Flags = &[
+    ("IMAGE_FILE_RELOCS_STRIPPED", 0x0001),
+    ("IMAGE_FILE_EXECUTABLE_IMAGE", 0x0002),
+    ("IMAGE_FILE_LINE_NUMS_STRIPPED", 0x0004),
+    ("IMAGE_FILE_LOCAL_SYMS_STRIPPED", 0x0008),
+    ("IMAGE_FILE_AGGRESIVE_WS_TRIM", 0x0010),
+    ("IMAGE_FILE_LARGE_ADDRESS_AWARE", 0x0020),
+    ("IMAGE_FILE_16BIT_MACHINE", 0x0040),
+    ("IMAGE_FILE_BYTES_REVERSED_LO", 0x0080),
+    ("IMAGE_FILE_32BIT_MACHINE", 0x0100),
+    ("IMAGE_FILE_DEBUG_STRIPPED", 0x0200),
+    ("IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP", 0x0400),
+    ("IMAGE_FILE_NET_RUN_FROM_SWAP", 0x0800),
+    ("IMAGE_FILE_SYSTEM", 0x1000),
+    ("IMAGE_FILE_DLL", 0x2000),
+    ("IMAGE_FILE_UP_SYSTEM_ONLY", 0x4000),
+    ("IMAGE_FILE_BYTES_REVERSED_HI", 0x8000),
+];
+
+const DLL_CHARACTERISTICS_FLAGS: Flags = &[
+    ("IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA", 0x0020),
+    ("IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE", 0x0040),
+    ("IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY", 0x0080),
+    ("IMAGE_DLLCHARACTERISTICS_NX_COMPAT", 0x0100),
+    ("IMAGE_DLLCHARACTERISTICS_NO_ISOLATION", 0x0200),
+    ("IMAGE_DLLCHARACTERISTICS_NO_SEH", 0x0400),
+    ("IMAGE_DLLCHARACTERISTICS_NO_BIND", 0x0800),
+    ("IMAGE_DLLCHARACTERISTICS_APPCONTAINER", 0x1000),
+    ("IMAGE_DLLCHARACTERISTICS_WDM_DRIVER", 0x2000),
+    ("IMAGE_DLLCHARACTERISTICS_GUARD_CF", 0x4000),
+    ("IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE", 0x8000),
+];
+
+const SECTION_FLAGS: Flags = &[
+    ("IMAGE_SCN_TYPE_REG", 0x00000000),
+    ("IMAGE_SCN_TYPE_DSECT", 0x00000001),
+    ("IMAGE_SCN_TYPE_NOLOAD", 0x00000002),
+    ("IMAGE_SCN_TYPE_GROUP", 0x00000004),
+    ("IMAGE_SCN_TYPE_NO_PAD", 0x00000008),
+    ("IMAGE_SCN_TYPE_COPY", 0x00000010),
+    ("IMAGE_SCN_CNT_CODE", 0x00000020),
+    ("IMAGE_SCN_CNT_INITIALIZED_DATA", 0x00000040),
+    ("IMAGE_SCN_CNT_UNINITIALIZED_DATA", 0x00000080),
+    ("IMAGE_SCN_LNK_OTHER", 0x00000100),
+    ("IMAGE_SCN_LNK_INFO", 0x00000200),
+    ("IMAGE_SCN_LNK_OVER", 0x00000400),
+    ("IMAGE_SCN_LNK_REMOVE", 0x00000800),
+    ("IMAGE_SCN_LNK_COMDAT", 0x00001000),
+    ("IMAGE_SCN_MEM_PROTECTED", 0x00004000),
+    ("IMAGE_SCN_NO_DEFER_SPEC_EXC", 0x00004000),
+    ("IMAGE_SCN_GPREL", 0x00008000),
+    ("IMAGE_SCN_MEM_FARDATA", 0x00008000),
+    ("IMAGE_SCN_MEM_SYSHEAP", 0x00010000),
+    ("IMAGE_SCN_MEM_PURGEABLE", 0x00020000),
+    ("IMAGE_SCN_MEM_16BIT", 0x00020000),
+    ("IMAGE_SCN_MEM_LOCKED", 0x00040000),
+    ("IMAGE_SCN_MEM_PRELOAD", 0x00080000),
+    ("IMAGE_SCN_ALIGN_1BYTES", 0x00100000),
+    ("IMAGE_SCN_ALIGN_2BYTES", 0x00200000),
+    ("IMAGE_SCN_ALIGN_4BYTES", 0x00300000),
+    ("IMAGE_SCN_ALIGN_8BYTES", 0x00400000),
+    ("IMAGE_SCN_ALIGN_16BYTES", 0x00500000),
+    ("IMAGE_SCN_ALIGN_32BYTES", 0x00600000),
+    ("IMAGE_SCN_ALIGN_64BYTES", 0x00700000),
+    ("IMAGE_SCN_ALIGN_128BYTES", 0x00800000),
+    ("IMAGE_SCN_ALIGN_256BYTES", 0x00900000),
+    ("IMAGE_SCN_ALIGN_512BYTES", 0x00A00000),
+    ("IMAGE_SCN_ALIGN_1024BYTES", 0x00B00000),
+    ("IMAGE_SCN_ALIGN_2048BYTES", 0x00C00000),
+    ("IMAGE_SCN_ALIGN_4096BYTES", 0x00D00000),
+    ("IMAGE_SCN_ALIGN_8192BYTES", 0x00E00000),
+    ("IMAGE_SCN_ALIGN_MASK", 0x00F00000),
+    ("IMAGE_SCN_LNK_NRELOC_OVFL", 0x01000000),
+    ("IMAGE_SCN_MEM_DISCARDABLE", 0x02000000),
+    ("IMAGE_SCN_MEM_NOT_CACHED", 0x04000000),
+    ("IMAGE_SCN_MEM_NOT_PAGED", 0x08000000),
+    ("IMAGE_SCN_MEM_SHARED", 0x10000000),
+    ("IMAGE_SCN_MEM_EXECUTE", 0x20000000),
+    ("IMAGE_SCN_MEM_READ", 0x40000000),
+    ("IMAGE_SCN_MEM_WRITE", 0x80000000),
+];
+
+fn flag(flags: Flags, field: u32, class: &str, name: &str) -> PyResult<bool> {
+    flags
+        .iter()
+        .find(|(flag, _)| *flag == name)
+        .map(|(_, mask)| field & mask != 0)
+        .ok_or_else(|| {
+            PyAttributeError::new_err(format!("'{class}' object has no attribute '{name}'"))
+        })
+}
+
+#[pymethods]
+impl FileHeader {
+    fn __getattr__(&self, name: &str) -> PyResult<bool> {
+        flag(
+            IMAGE_FILE_FLAGS,
+            self.Characteristics.into(),
+            "FileHeader",
+            name,
+        )
+    }
+}
+
+#[pymethods]
+impl OptionalHeader {
+    fn __getattr__(&self, name: &str) -> PyResult<bool> {
+        let field = self.DllCharacteristics.into();
+        flag(DLL_CHARACTERISTICS_FLAGS, field, "OptionalHeader", name)
+    }
+}
+
+#[pymethods]
+impl Section {
+    fn __getattr__(&self, name: &str) -> PyResult<bool> {
+        flag(SECTION_FLAGS, self.Characteristics, "Section", name)
+    }
+}
 
 /// A parsed PE file. Everything is parsed once, up front, in Rust.
 #[pyclass(frozen, module = "peoxide")]
