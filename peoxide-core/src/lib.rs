@@ -5,6 +5,8 @@ pub use debug::{DebugDirectory, DebugEntry};
 mod headers;
 mod imphash;
 mod ordinals;
+mod reloc;
+pub use reloc::{Relocation, RelocationBlock};
 mod rich;
 pub use address::{SectionLayout, clamp, entropy};
 pub use goblin::error::Error;
@@ -33,6 +35,7 @@ pub struct Pe {
     pub exports: Vec<ExportSymbol>,
     pub debug: Vec<DebugDirectory>,
     pub rich_header: Option<RichHeader>,
+    pub relocations: Vec<RelocationBlock>,
 }
 
 pub struct ImportDll {
@@ -125,10 +128,12 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
         exports,
         debug: Vec::new(),
         rich_header: rich::parse(data, optional_header_offset),
+        relocations: Vec::new(),
     };
     // These directories are read through RVAs, which need the section layouts above.
     pe.delay_imports = pe.parse_delay_imports(data);
     pe.debug = pe.parse_debug_directory(data);
+    pe.relocations = pe.parse_relocations(data);
     Ok(pe)
 }
 
