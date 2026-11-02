@@ -60,10 +60,10 @@ Everything is parsed up front, and every attribute below is read-only.
 
 | Attribute | Contents |
 |---|---|
-| `DOS_HEADER` | `e_magic`, `e_lfanew` |
+| `DOS_HEADER` | Every field, from `e_magic` to `e_lfanew`. `e_res` and `e_res2` are raw bytes. |
 | `NT_HEADERS` | `Signature` |
 | `FILE_HEADER` | `Machine`, `NumberOfSections`, `TimeDateStamp`, `PointerToSymbolTable`, `NumberOfSymbols`, `SizeOfOptionalHeader`, `Characteristics` |
-| `OPTIONAL_HEADER` | Every PE32 and PE32+ field, from `Magic` to `NumberOfRvaAndSizes`. `BaseOfData` is `None` on PE32+. |
+| `OPTIONAL_HEADER` | Every PE32 and PE32+ field, from `Magic` to `NumberOfRvaAndSizes`. `BaseOfData` is `None` on PE32+. `DATA_DIRECTORY` lists each directory's `name`, `VirtualAddress` and `Size`. |
 | `sections` | List of sections with `Name` (8 raw bytes), `Misc_VirtualSize`, `VirtualAddress`, `SizeOfRawData`, `PointerToRawData`, `PointerToRelocations`, `PointerToLinenumbers`, `NumberOfRelocations`, `NumberOfLinenumbers`, `Characteristics` |
 | `DIRECTORY_ENTRY_IMPORT` | List of imported DLLs, each with `dll` (bytes) and `imports`. Each import has `name` (bytes or `None`), `hint`, `ordinal`, `import_by_ordinal` and `address` (the IAT slot's virtual address). |
 | `DIRECTORY_ENTRY_EXPORT` | Has `symbols`, a list where each symbol has `name` (bytes or `None`), `ordinal`, `address` (RVA) and `forwarder` (bytes or `None`). |
@@ -104,17 +104,20 @@ files, and checks that every one either parses or raises `PEFormatError`.
 
 ## Benchmark
 
-`scripts/benchmark.py` reads each file's bytes outside the timer, hands the same bytes to every
-parser, and reports the median of several rounds. It times pefile twice: once limited to the work
-peoxide does (headers, sections, imports, exports), and once with its default full parse.
+`scripts/benchmark.py` times each parser on the same in-memory bytes. The timer covers parsing
+and then reading every header, section, import and export back out, so a parser can't look fast
+by deferring work. Before timing, it checks that peoxide's results equal pefile's on every file.
+Garbage collection is disabled while timing, parser order is shuffled per file, one warm-up round
+is discarded, and the median round is reported. pefile is timed twice. Once it is limited to the
+work peoxide does (headers, sections, imports, exports), and once it runs its default full parse.
 
 Results for the 75 DLLs in `C:\Windows\System32\wbem` (25 MB, 3 rounds, release build, one Windows 11 machine):
 
 | Parser | Total | Per file | vs peoxide |
 |---|---:|---:|---:|
-| peoxide | 0.01 s | 0.13 ms | 1.0x |
-| pefile (headers + imports + exports) | 0.34 s | 4.51 ms | 33.5x |
-| pefile (default full parse) | 4.08 s | 54.35 ms | 403.1x |
+| peoxide | 13.9 ms | 0.185 ms | 1.0x |
+| pefile (headers + imports + exports) | 278.5 ms | 3.713 ms | 20.0x |
+| pefile (default full parse) | 2,988.3 ms | 39.844 ms | 215.0x |
 
 The scoped row is the fair comparison. The full-parse row is what you get from a plain
 `pefile.PE(path)`, which also parses resources, relocations, debug data and more.
