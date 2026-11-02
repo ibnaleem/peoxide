@@ -149,18 +149,72 @@ py_class!(OptionalHeader from peoxide_core::OptionalHeader as (py, c) {
     )?,
 });
 
-py_class!(Section from peoxide_core::Section as (py, c) {
-    Name: Py<PyBytes> = bytes(py, &c.name),
-    Misc_VirtualSize: u32 = c.virtual_size,
-    VirtualAddress: u32 = c.virtual_address,
-    SizeOfRawData: u32 = c.size_of_raw_data,
-    PointerToRawData: u32 = c.pointer_to_raw_data,
-    PointerToRelocations: u32 = c.pointer_to_relocations,
-    PointerToLinenumbers: u32 = c.pointer_to_linenumbers,
-    NumberOfRelocations: u16 = c.number_of_relocations,
-    NumberOfLinenumbers: u16 = c.number_of_linenumbers,
-    Characteristics: u32 = c.characteristics,
-});
+#[pyclass(frozen, module = "peoxide")]
+struct Section {
+    #[pyo3(get)]
+    Name: Py<PyBytes>,
+    #[pyo3(get)]
+    Misc_VirtualSize: u32,
+    #[pyo3(get)]
+    VirtualAddress: u32,
+    #[pyo3(get)]
+    SizeOfRawData: u32,
+    #[pyo3(get)]
+    PointerToRawData: u32,
+    #[pyo3(get)]
+    PointerToRelocations: u32,
+    #[pyo3(get)]
+    PointerToLinenumbers: u32,
+    #[pyo3(get)]
+    NumberOfRelocations: u16,
+    #[pyo3(get)]
+    NumberOfLinenumbers: u16,
+    #[pyo3(get)]
+    Characteristics: u32,
+    table: peoxide_core::Section,
+    layout: peoxide_core::SectionLayout,
+    /// The whole file, shared with `PE` and every other section.
+    file: Py<PyBytes>,
+}
+
+impl Section {
+    fn new(
+        py: Python<'_>,
+        table: &peoxide_core::Section,
+        layout: peoxide_core::SectionLayout,
+        file: &Bound<'_, PyBytes>,
+    ) -> Self {
+        Section {
+            Name: bytes(py, &table.name),
+            Misc_VirtualSize: table.virtual_size,
+            VirtualAddress: table.virtual_address,
+            SizeOfRawData: table.size_of_raw_data,
+            PointerToRawData: table.pointer_to_raw_data,
+            PointerToRelocations: table.pointer_to_relocations,
+            PointerToLinenumbers: table.pointer_to_linenumbers,
+            NumberOfRelocations: table.number_of_relocations,
+            NumberOfLinenumbers: table.number_of_linenumbers,
+            Characteristics: table.characteristics,
+            table: table.clone(),
+            layout,
+            file: file.clone().unbind(),
+        }
+    }
+
+    fn data<'a>(
+        &'a self,
+        py: Python<'_>,
+        start: Option<i64>,
+        length: Option<i64>,
+        ignore_padding: bool,
+    ) -> &'a [u8] {
+        let file = self.file.as_bytes(py);
+        let range = self
+            .layout
+            .data_range(&self.table, start, length, ignore_padding);
+        &file[peoxide_core::clamp(range, file.len())]
+    }
+}
 
 py_class!(ImportData from peoxide_core::ImportSymbol as (py, c) {
     name: Option<Py<PyBytes>> = c.name.as_deref().map(|n| bytes(py, n)),
@@ -304,10 +358,70 @@ impl OptionalHeader {
     }
 }
 
+fn hexdigest(py: Python<'_>, algorithm: &str, data: &[u8]) -> PyResult<String> {
+    py.import("hashlib")?
+        .call_method1(algorithm, (PyBytes::new(py, data),))?
+        .call_method0("hexdigest")?
+        .extract()
+}
+
 #[pymethods]
 impl Section {
     fn __getattr__(&self, name: &str) -> PyResult<bool> {
         flag(SECTION_FLAGS, self.Characteristics, "Section", name)
+    }
+
+    /// The section's bytes, or a slice of them starting at RVA `start`.
+    #[pyo3(signature = (start=None, length=None, ignore_padding=false))]
+    fn get_data<'py>(
+        &self,
+        py: Python<'py>,
+        start: Option<i64>,
+        length: Option<i64>,
+        ignore_padding: bool,
+    ) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, self.data(py, start, length, ignore_padding))
+    }
+
+    /// Shannon entropy of `get_data()`, in bits per byte.
+    fn get_entropy(&self, py: Python<'_>) -> f64 {
+        peoxide_core::entropy(self.data(py, None, None, false))
+    }
+
+    fn get_hash_md5(&self, py: Python<'_>) -> PyResult<String> {
+        hexdigest(py, "md5", self.data(py, None, None, false))
+    }
+
+    fn get_hash_sha1(&self, py: Python<'_>) -> PyResult<String> {
+        hexdigest(py, "sha1", self.data(py, None, None, false))
+    }
+
+    fn get_hash_sha256(&self, py: Python<'_>) -> PyResult<String> {
+        hexdigest(py, "sha256", self.data(py, None, None, false))
+    }
+
+    fn get_hash_sha512(&self, py: Python<'_>) -> PyResult<String> {
+        hexdigest(py, "sha512", self.data(py, None, None, false))
+    }
+
+    fn contains_rva(&self, rva: i64) -> bool {
+        self.layout.contains_rva(rva)
+    }
+
+    fn contains(&self, rva: i64) -> bool {
+        self.layout.contains_rva(rva)
+    }
+
+    fn contains_offset(&self, offset: i64) -> bool {
+        self.layout.contains_offset(&self.table, offset)
+    }
+
+    fn get_offset_from_rva(&self, rva: i64) -> i64 {
+        self.layout.offset_from_rva(rva)
+    }
+
+    fn get_rva_from_offset(&self, offset: i64) -> i64 {
+        self.layout.rva_from_offset(offset)
     }
 }
 
@@ -360,7 +474,14 @@ impl PE {
             NT_HEADERS: Py::new(py, NtHeaders::new(py, h)?)?,
             FILE_HEADER: Py::new(py, FileHeader::new(py, &h.file_header)?)?,
             OPTIONAL_HEADER: Py::new(py, OptionalHeader::new(py, &h.optional_header)?)?,
-            sections: list(py, &pe.sections, Section::new)?,
+            sections: PyList::new(
+                py,
+                pe.sections
+                    .iter()
+                    .zip(&pe.layouts)
+                    .map(|(table, layout)| Section::new(py, table, *layout, &data)),
+            )?
+            .unbind(),
             DIRECTORY_ENTRY_IMPORT: list(py, &pe.imports, ImportDescData::new)?,
             DIRECTORY_ENTRY_EXPORT: Py::new(py, ExportDirData::new(py, &pe.exports)?)?,
             pe,
