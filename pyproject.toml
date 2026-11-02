@@ -5,13 +5,18 @@ build-backend = "maturin"
 [project]
 name = "peoxide"
 description = "A fast PE file parser library for Python, written in Rust."
+readme = "README.md"
 requires-python = ">=3.8"
+keywords = ["pe", "portable-executable", "pefile", "windows", "malware-analysis", "reverse-engineering"]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/ibnaleem/peoxide"
 
 [tool.maturin]
 manifest-path = "peoxide-py/Cargo.toml"
