@@ -2,29 +2,37 @@
 
 Usage: python scripts/benchmark.py C:\\Windows\\System32 [rounds]
 
-File bytes are read outside the timer and handed to every parser via `data=`, so disk I/O
-and the OS file cache are not part of the numbers. Each round times every parser on every
-file; the reported total is the median round.
+What is timed, per file and parser: parsing the bytes and then reading every header,
+section, import and export back out through `parity_sweep.summarize`. Reading the results
+inside the timer means a parser cannot look fast by deferring work.
+
+Outside the timer, every file is checked once: peoxide's results must equal both pefile
+variants (after the documented normalisations in `parity_sweep.differences`). File bytes are
+read outside the timer, garbage collection is disabled while timing (as `timeit` does) and run
+between files instead, parser order is shuffled per file, and one untimed warm-up round runs
+first. The reported number is the median round.
 """
 
+import gc
+import random
 import statistics
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # python -I drops the script's folder
+
 import pefile
+from parity_sweep import DIRECTORIES, differences, summarize
 
 import peoxide
-
-SCOPED = [
-    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
-    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"],
-]
 
 
 def pefile_scoped(data):
     pe = pefile.PE(data=data, fast_load=True)
-    pe.parse_data_directories(directories=SCOPED)
+    pe.parse_data_directories(directories=DIRECTORIES)
+    return pe
 
 
 PARSERS = {
@@ -34,41 +42,63 @@ PARSERS = {
 }
 
 
-def parseable(paths):
-    for path in paths:
+def checked_files(folder):
+    """Files every parser accepts and agrees on, plus counts of what was left out and why."""
+    kept, skipped = [], Counter()
+    for path in sorted(Path(folder).glob("*.dll")):
         data = path.read_bytes()
         try:
-            pefile.PE(data=data, fast_load=True)
-            peoxide.PE(data=data)
+            references = [PARSERS[name](data) for name in list(PARSERS)[1:]]
         except Exception:
+            skipped["pefile failed"] += 1
             continue
-        yield path
+        try:
+            ours = PARSERS["peoxide"](data)
+        except peoxide.PEFormatError:
+            skipped["peoxide failed"] += 1
+            continue
+        for reference in references:
+            differing = differences(ours, reference)
+            if differing:
+                sys.exit(f"{path.name}: peoxide and pefile disagree on {differing}")
+        kept.append(path)
+    return kept, skipped
+
+
+def timed_round(paths, rng):
+    elapsed = dict.fromkeys(PARSERS, 0.0)
+    for path in paths:
+        data = path.read_bytes()
+        order = list(PARSERS.items())
+        rng.shuffle(order)
+        for name, parse in order:
+            start = time.perf_counter()
+            summarize(parse(data))
+            elapsed[name] += time.perf_counter() - start
+        gc.collect()
+    return elapsed
 
 
 def main(folder, rounds):
-    paths = list(parseable(sorted(Path(folder).glob("*.dll"))))
+    paths, skipped = checked_files(folder)
     megabytes = sum(p.stat().st_size for p in paths) / 1e6
-    totals = {name: [] for name in PARSERS}
-    for _ in range(rounds):
-        elapsed = dict.fromkeys(PARSERS, 0.0)
-        for path in paths:
-            data = path.read_bytes()
-            for name, parse in PARSERS.items():
-                start = time.perf_counter()
-                parse(data)
-                elapsed[name] += time.perf_counter() - start
-        for name, seconds in elapsed.items():
-            totals[name].append(seconds)
+    rng = random.Random(0)
+    gc.disable()
+    try:
+        timed_round(paths, rng)
+        results = [timed_round(paths, rng) for _ in range(rounds)]
+    finally:
+        gc.enable()
 
-    print(f"{len(paths)} files, {megabytes:,.0f} MB, {rounds} rounds (median shown)\n")
+    print(f"{len(paths)} files, {megabytes:,.0f} MB, {rounds} rounds + 1 warm-up (median shown)")
+    print(f"Left out: {dict(skipped) or 'none'}. Results matched pefile on every timed file.\n")
     print("| parser | total | per file | vs peoxide |")
     print("|---|---:|---:|---:|")
-    baseline = statistics.median(totals["peoxide"])
-    for name, runs in totals.items():
-        total = statistics.median(runs)
+    totals = {name: statistics.median(r[name] for r in results) for name in PARSERS}
+    for name, total in totals.items():
         print(
-            f"| {name} | {total:.2f} s | {total / len(paths) * 1e3:.2f} ms "
-            f"| {total / baseline:.1f}x |"
+            f"| {name} | {total * 1e3:,.1f} ms | {total / len(paths) * 1e3:.3f} ms "
+            f"| {total / totals['peoxide']:.1f}x |"
         )
 
 
