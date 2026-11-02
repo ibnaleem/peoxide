@@ -12,6 +12,8 @@ const SECTOR_MASK: u32 = !0x1FF;
 const PAGE_SIZE: u32 = 0x1000;
 const SECTION_HEADER_SIZE: i64 = 40;
 const NT_SIGNATURE_AND_FILE_HEADER_SIZE: i64 = 4 + 20;
+/// The certificate table's "RVA" is a file offset, so pefile leaves it out of the overlay.
+const SECURITY_DIRECTORY: usize = 4;
 
 /// Where a section lives once pefile's alignment rules are applied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +71,26 @@ pub fn clamp((start, end): (i64, i64), len: usize) -> Range<usize> {
     let len = len as i64;
     let start = start.clamp(0, len);
     start as usize..end.clamp(start, len) as usize
+}
+
+/// Shannon entropy in bits per byte, 0.0 for empty data (pefile's `entropy_H`).
+pub fn entropy(data: &[u8]) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    let mut counts = [0usize; 256];
+    for &byte in data {
+        counts[byte as usize] += 1;
+    }
+    let len = data.len() as f64;
+    counts
+        .iter()
+        .filter(|&&count| count > 0)
+        .map(|&count| {
+            let p = count as f64 / len;
+            -p * p.log2()
+        })
+        .sum()
 }
 
 fn align_down(value: u32, alignment: u32) -> u32 {
@@ -174,6 +196,44 @@ impl Pe {
             Some(lowest) => (offset < lowest).then_some(offset),
             None => Some(offset),
         }
+    }
+
+    /// Where data appended past everything the headers describe starts, as pefile computes it.
+    pub fn overlay_offset(&self) -> Option<usize> {
+        let file_size = self.file_size as i64;
+        let optional_header = (
+            self.headers.dos_header.e_lfanew as i64 + NT_SIGNATURE_AND_FILE_HEADER_SIZE,
+            self.headers.file_header.size_of_optional_header as i64,
+        );
+        let sections = self
+            .sections
+            .iter()
+            .map(|s| (s.pointer_to_raw_data as i64, s.size_of_raw_data as i64));
+        let directories = self
+            .headers
+            .optional_header
+            .data_directory
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != SECURITY_DIRECTORY)
+            .filter_map(|(_, d)| {
+                Some((
+                    self.offset_from_rva(d.virtual_address as i64)?,
+                    d.size as i64,
+                ))
+            });
+        let described_end = std::iter::once(optional_header)
+            .chain(sections)
+            .chain(directories)
+            .map(|(offset, size)| offset + size)
+            .fold(0, |largest, end| {
+                if largest < end && end <= file_size {
+                    end
+                } else {
+                    largest
+                }
+            });
+        (file_size > described_end).then_some(described_end as usize)
     }
 
     /// The file range `pe.get_data(rva, length)` reads, or `None` where pefile raises.

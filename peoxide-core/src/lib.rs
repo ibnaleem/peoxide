@@ -1,6 +1,6 @@
 mod address;
 mod headers;
-pub use address::{SectionLayout, clamp};
+pub use address::{SectionLayout, clamp, entropy};
 pub use goblin::error::Error;
 pub use goblin::pe::data_directories::DataDirectory;
 pub use goblin::pe::section_table::SectionTable as Section;
@@ -260,6 +260,19 @@ mod tests {
         assert_eq!(range, offset as usize..offset as usize + 4);
         assert_eq!(&data[pe.data_range(0, Some(2)).unwrap()], b"MZ");
         assert!(pe.data_range(data.len() as i64 + 0x10_0000, None).is_none());
+    }
+
+    #[test]
+    fn finds_overlay_and_entropy() {
+        let data = std::fs::read(KERNEL32).unwrap();
+        let with_overlay = [data.as_slice(), b"appended"].concat();
+        let pe = parse(&with_overlay).unwrap();
+        let offset = pe.overlay_offset().expect("appended bytes are an overlay");
+        assert!(with_overlay[offset..].ends_with(b"appended"));
+
+        assert_eq!(entropy(b""), 0.0);
+        assert_eq!(entropy(b"aaaa"), 0.0);
+        assert_eq!(entropy(&[0, 1, 2, 3]), 2.0);
     }
 
     #[test]
