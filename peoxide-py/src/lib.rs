@@ -328,9 +328,8 @@ struct PE {
     DIRECTORY_ENTRY_IMPORT: Py<PyList>,
     #[pyo3(get)]
     DIRECTORY_ENTRY_EXPORT: Py<ExportDirData>,
-    exe: bool,
-    dll: bool,
-    driver: bool,
+    pe: peoxide_core::Pe,
+    data: Py<PyBytes>,
 }
 
 #[pymethods]
@@ -341,14 +340,10 @@ impl PE {
     fn new(
         py: Python<'_>,
         name: Option<std::path::PathBuf>,
-        data: Option<&[u8]>,
+        data: Option<Bound<'_, PyBytes>>,
     ) -> PyResult<Self> {
-        let owned;
         let data = match (name, data) {
-            (Some(path), None) => {
-                owned = std::fs::read(path)?;
-                &owned[..]
-            }
+            (Some(path), None) => PyBytes::new(py, &std::fs::read(path)?),
             (None, Some(data)) => data,
             _ => {
                 return Err(PyTypeError::new_err(
@@ -356,7 +351,8 @@ impl PE {
                 ));
             }
         };
-        let pe = peoxide_core::parse(data).map_err(|e| PEFormatError::new_err(e.to_string()))?;
+        let pe = peoxide_core::parse(data.as_bytes())
+            .map_err(|e| PEFormatError::new_err(e.to_string()))?;
         let h = &pe.headers;
 
         Ok(PE {
@@ -367,25 +363,71 @@ impl PE {
             sections: list(py, &pe.sections, Section::new)?,
             DIRECTORY_ENTRY_IMPORT: list(py, &pe.imports, ImportDescData::new)?,
             DIRECTORY_ENTRY_EXPORT: Py::new(py, ExportDirData::new(py, &pe.exports)?)?,
-            exe: pe.is_exe(),
-            dll: pe.is_dll(),
-            driver: pe.is_driver(),
+            pe,
+            data: data.unbind(),
         })
+    }
+
+    /// Bytes at an RVA, read from whichever section holds it (or the headers, or the raw file).
+    #[pyo3(signature = (rva=0, length=None))]
+    fn get_data<'py>(
+        &self,
+        py: Python<'py>,
+        rva: i64,
+        length: Option<i64>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let range = self.pe.data_range(rva, length).ok_or_else(|| {
+            PEFormatError::new_err("data at RVA can't be fetched. Corrupt header?")
+        })?;
+        Ok(PyBytes::new(py, &self.data.as_bytes(py)[range]))
+    }
+
+    fn get_offset_from_rva(&self, rva: i64) -> PyResult<i64> {
+        self.pe.offset_from_rva(rva).ok_or_else(|| {
+            PEFormatError::new_err(format!("data at RVA 0x{rva:x} can't be fetched"))
+        })
+    }
+
+    /// `None` when the offset is past the start of the first section but in none of them.
+    fn get_rva_from_offset(&self, offset: i64) -> Option<i64> {
+        self.pe.rva_from_offset(offset)
+    }
+
+    fn get_section_by_rva<'py>(
+        &self,
+        py: Python<'py>,
+        rva: i64,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let index = self.pe.section_by_rva(rva);
+        index
+            .map(|i| self.sections.bind(py).get_item(i))
+            .transpose()
+    }
+
+    fn get_section_by_offset<'py>(
+        &self,
+        py: Python<'py>,
+        offset: i64,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let index = self.pe.section_by_offset(offset);
+        index
+            .map(|i| self.sections.bind(py).get_item(i))
+            .transpose()
     }
 
     /// True for a standard executable: not a DLL, not a driver, and marked executable.
     fn is_exe(&self) -> bool {
-        self.exe
+        self.pe.is_exe()
     }
 
     /// True when FILE_HEADER has IMAGE_FILE_DLL set.
     fn is_dll(&self) -> bool {
-        self.dll
+        self.pe.is_dll()
     }
 
     /// True when the image imports a kernel DLL, or has a PAGE section and a native subsystem.
     fn is_driver(&self) -> bool {
-        self.driver
+        self.pe.is_driver()
     }
 }
 
