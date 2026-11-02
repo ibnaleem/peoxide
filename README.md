@@ -77,6 +77,25 @@ examples, and every `IMAGE_FILE_*`, `IMAGE_DLLCHARACTERISTICS_*` and `IMAGE_SCN_
 | `is_dll()` | `True` when `FILE_HEADER` has `IMAGE_FILE_DLL` set. |
 | `is_driver()` | `True` when the image imports a kernel module such as `ntoskrnl.exe`, or has a `PAGE` section and a native subsystem. Uses pefile's heuristic. |
 | `is_exe()` | `True` when the image is marked executable and is neither a DLL nor a driver. |
+| `get_data(rva=0, length=None)` | Bytes at an RVA, read from the section that holds it, or from the headers or raw file when no section does. Raises `PEFormatError` when the RVA is past the end of the file. |
+| `get_offset_from_rva(rva)` | The file offset an RVA maps to. Raises `PEFormatError` like `get_data`. |
+| `get_rva_from_offset(offset)` | The RVA a file offset maps to, or `None`. |
+| `get_section_by_rva(rva)`, `get_section_by_offset(offset)` | The section containing the address, or `None`. |
+| `get_overlay()`, `get_overlay_data_start_offset()` | Data appended after everything the headers describe, and where it starts, or `None`. |
+
+Sections have methods too:
+
+| Method | Returns |
+|---|---|
+| `get_data(start=None, length=None, ignore_padding=False)` | The section's bytes, or a slice starting at RVA `start`. `ignore_padding` stops at `Misc_VirtualSize`. |
+| `get_entropy()` | Shannon entropy of the section's bytes, in bits per byte. |
+| `get_hash_md5()`, `get_hash_sha1()`, `get_hash_sha256()`, `get_hash_sha512()` | Hex digest of the section's bytes. |
+| `contains_rva(rva)`, `contains_offset(offset)` | Whether the address falls inside the section. |
+| `get_offset_from_rva(rva)`, `get_rva_from_offset(offset)` | Address conversion within this section. |
+
+Address math follows pefile's rules exactly, including its rounding of `PointerToRawData` to
+512 bytes and of `VirtualAddress` to the section alignment. Like pefile, `sections` is ordered
+by `VirtualAddress`.
 
 Errors:
 
@@ -95,6 +114,7 @@ the two disagree in these cases:
 - **Very large export tables.** pefile stops after 8192 ordinal-only exports and treats the rest as corrupt. Some real DLLs, such as `mfc100.dll`, export more than that, and peoxide returns all of them.
 - **Very long export names.** pefile truncates names longer than `MAX_SYMBOL_NAME_LENGTH`. peoxide returns the full name.
 - **Files with no imports or exports.** pefile leaves `DIRECTORY_ENTRY_IMPORT` and `DIRECTORY_ENTRY_EXPORT` undefined. peoxide always defines them, as an empty list and an object with an empty `symbols` list, so loops work without a `hasattr` check.
+- **Section reads that start before the section.** `section.get_data(start)` with `start` below the section's address gives pefile a negative offset, which Python treats as counting from the end of the file. peoxide clamps it to the start of the file instead.
 - **Scope.** peoxide does not parse resources, the Rich header, relocations, debug data or the delay-import table, and it cannot modify or write PE files.
 
 ## Correctness
