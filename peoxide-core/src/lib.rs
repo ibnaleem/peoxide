@@ -1,5 +1,7 @@
 mod address;
+mod debug;
 mod delay;
+pub use debug::{DebugDirectory, DebugEntry};
 mod headers;
 mod imphash;
 mod ordinals;
@@ -27,6 +29,7 @@ pub struct Pe {
     pub imports: Vec<ImportDll>,
     pub delay_imports: Vec<ImportDll>,
     pub exports: Vec<ExportSymbol>,
+    pub debug: Vec<DebugDirectory>,
 }
 
 pub struct ImportDll {
@@ -116,9 +119,11 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
         imports,
         delay_imports: Vec::new(),
         exports,
+        debug: Vec::new(),
     };
-    // Reading the delay-import table needs the section layouts above.
+    // These directories are read through RVAs, which need the section layouts above.
     pe.delay_imports = pe.parse_delay_imports(data);
+    pe.debug = pe.parse_debug_directory(data);
     Ok(pe)
 }
 
@@ -299,6 +304,25 @@ mod tests {
         );
         assert!(!imports.contains(".dll."), "known extensions are stripped");
         assert!(pe.exphash_input().unwrap().contains("createfilew"));
+    }
+
+    #[test]
+    fn decodes_the_codeview_pdb_record() {
+        let pe = parse(&std::fs::read(KERNEL32).unwrap()).unwrap();
+        let codeview = pe
+            .debug
+            .iter()
+            .find_map(|d| match &d.entry {
+                Some(entry @ DebugEntry::Pdb70 { pdb_file_name, .. }) => {
+                    Some((entry, pdb_file_name.clone()))
+                }
+                _ => None,
+            })
+            .expect("kernel32 has an RSDS record");
+        let name = codeview.1.unwrap();
+        assert!(name.to_ascii_lowercase().starts_with(b"kernel32.pdb"));
+        let signature = codeview.0.pdb70_signature_string().unwrap();
+        assert!(signature.len() > 32 && signature.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
