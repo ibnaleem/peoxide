@@ -174,6 +174,53 @@ def test_sections(pair):
         assert_fields_match(mine, ref, SECTION_FIELDS)
 
 
+def outcome(method, *args):
+    try:
+        return method(*args)
+    except (pefile.PEFormatError, peoxide.PEFormatError):
+        return "raised"
+
+
+def probe_rvas(pe):
+    rvas = {0, 2, 0x40, 0x3FF, len(pe.__data__) - 1, len(pe.__data__) + 0x100000}
+    for s in pe.sections:
+        end = s.VirtualAddress + max(s.Misc_VirtualSize, s.SizeOfRawData)
+        rvas |= {s.VirtualAddress, s.VirtualAddress + 0x10, end - 1, end, end + 0x10}
+    return sorted(rvas)
+
+
+def probe_offsets(pe):
+    offsets = {0, 0x40, len(pe.__data__) - 1, len(pe.__data__) + 0x100000}
+    for s in pe.sections:
+        end = s.PointerToRawData + s.SizeOfRawData
+        offsets |= {s.PointerToRawData, s.PointerToRawData + 0x10, end - 1, end}
+    return sorted(offsets)
+
+
+def test_get_data(pair):
+    ours, theirs = pair
+    for rva in probe_rvas(theirs):
+        for length in (None, 1, 16):
+            assert outcome(ours.get_data, rva, length) == outcome(theirs.get_data, rva, length), (
+                hex(rva),
+                length,
+            )
+
+
+def test_rva_offset_mapping(pair):
+    ours, theirs = pair
+    for rva in probe_rvas(theirs):
+        assert outcome(ours.get_offset_from_rva, rva) == outcome(
+            theirs.get_offset_from_rva, rva
+        ), hex(rva)
+        mine, ref = ours.get_section_by_rva(rva), theirs.get_section_by_rva(rva)
+        assert (mine and mine.Name) == (ref and ref.Name), hex(rva)
+    for offset in probe_offsets(theirs):
+        assert ours.get_rva_from_offset(offset) == theirs.get_rva_from_offset(offset), hex(offset)
+        mine, ref = ours.get_section_by_offset(offset), theirs.get_section_by_offset(offset)
+        assert (mine and mine.Name) == (ref and ref.Name), hex(offset)
+
+
 def test_imports(pair):
     ours, theirs = pair
     expected = getattr(theirs, "DIRECTORY_ENTRY_IMPORT", [])
