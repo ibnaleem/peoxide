@@ -310,6 +310,55 @@ def test_corpus_has_delay_imports():
     assert any(peoxide.PE(str(p)).DIRECTORY_ENTRY_DELAY_IMPORT for p in CORPUS)
 
 
+DEBUG_FIELDS = [
+    "Characteristics",
+    "TimeDateStamp",
+    "MajorVersion",
+    "MinorVersion",
+    "Type",
+    "SizeOfData",
+    "AddressOfRawData",
+    "PointerToRawData",
+]
+DEBUG_ENTRY_FIELDS = {
+    "CvInfoPdb70": [
+        "CvSignature",
+        "Signature_Data1",
+        "Signature_Data2",
+        "Signature_Data3",
+        "Signature_Data4",
+        "Signature_Data5",
+        "Signature_Data6",
+        "Signature_Data6_value",
+        "Signature_String",
+        "Age",
+        "PdbFileName",
+    ],
+    "CvInfoPdb20": ["CvHeaderSignature", "CvHeaderOffset", "Signature", "Age", "PdbFileName"],
+    "ExDllCharacteristics": ["ExDllCharacteristics", "IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT"],
+}
+
+
+def debug_entries(pe):
+    entries = []
+    for d in getattr(pe, "DIRECTORY_ENTRY_DEBUG", []):
+        struct = [getattr(d.struct, f) for f in DEBUG_FIELDS]
+        kind = next((k for k, fields in DEBUG_ENTRY_FIELDS.items() if hasattr(d.entry, fields[0])), None)
+        values = [getattr(d.entry, f, None) for f in DEBUG_ENTRY_FIELDS[kind]] if kind else None
+        entries.append((struct, kind, values))
+    return entries
+
+
+def test_debug_directory(pair):
+    ours, theirs = pair
+    assert debug_entries(ours) == debug_entries(theirs)
+
+
+def test_corpus_has_codeview_records():
+    kinds = {kind for p in CORPUS for _, kind, _ in debug_entries(peoxide.PE(str(p)))}
+    assert "CvInfoPdb70" in kinds
+
+
 def test_exports(pair):
     ours, theirs = pair
     export_dir = getattr(theirs, "DIRECTORY_ENTRY_EXPORT", None)
