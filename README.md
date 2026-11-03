@@ -155,19 +155,19 @@ and then reading every header, section, import and export back out, so a parser 
 by deferring work. Before timing, it checks that peoxide's results equal pefile's on every file.
 Garbage collection is disabled while timing, parser order is shuffled per file, one warm-up round
 is discarded, and the median round is reported. pefile is timed twice. Once it is limited to the
-work peoxide does (headers, sections, imports, delay imports, exports), and once it runs its
-default full parse.
+work peoxide does (headers, sections, imports, delay imports, exports, debug, relocations and
+resources with their string tables and version info), and once it runs its default full parse.
 
-Results for the 75 DLLs in `C:\Windows\System32\wbem` (25 MB, 3 rounds, release build, one Windows 11 machine):
+Results for the 75 DLLs in `C:\Windows\System32\wbem` (25 MB, 5 rounds, release build, one Windows 11 machine):
 
 | Parser | Total | Per file | vs peoxide |
 |---|---:|---:|---:|
-| peoxide | 14.4 ms | 0.192 ms | 1.0x |
-| pefile (same work as peoxide) | 296.5 ms | 3.953 ms | 20.6x |
-| pefile (default full parse) | 3,063.6 ms | 40.848 ms | 212.5x |
+| peoxide | 25.0 ms | 0.334 ms | 1.0x |
+| pefile (same work as peoxide) | 1,003.7 ms | 13.383 ms | 40.1x |
+| pefile (default full parse) | 3,039.2 ms | 40.523 ms | 121.4x |
 
 The scoped row is the fair comparison. The full-parse row is what you get from a plain
-`pefile.PE(path)`, which also parses resources, relocations, debug data and more.
+`pefile.PE(path)`, which also parses TLS, load config, bound imports and more.
 To reproduce, build in release mode first:
 
 ```sh
