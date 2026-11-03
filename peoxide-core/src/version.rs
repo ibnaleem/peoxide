@@ -387,20 +387,14 @@ mod tests {
         );
     }
 
-    /// Values pefile 2024.8.26 reports for this machine's kernel32.dll.
+    /// Values pefile 2024.8.26 reports for kernel32.dll that hold across Windows builds.
     #[test]
     fn kernel32_version_matches_pefile() {
         let data = std::fs::read(r"C:\Windows\System32\kernel32.dll").unwrap();
         let pe = crate::parse(&data).unwrap();
         let info = &pe.version.vs_versioninfo.as_ref().unwrap()[0];
-        assert_eq!(
-            (
-                info.header.length,
-                info.header.value_length,
-                info.header.type_
-            ),
-            (928, 52, 0)
-        );
+        assert_eq!(info.key, b"VS_VERSION_INFO");
+        assert_eq!((info.header.value_length, info.header.type_), (52, 0));
         assert_eq!(
             pe.version.vs_fixedfileinfo.as_ref().unwrap()[0].signature,
             0xFEEF04BD
