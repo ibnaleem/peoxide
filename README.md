@@ -70,6 +70,7 @@ Everything is parsed up front, and every attribute below is read-only.
 | `DIRECTORY_ENTRY_DEBUG` | Debug records, each with `struct` (`Characteristics`, `TimeDateStamp`, `MajorVersion`, `MinorVersion`, `Type`, `SizeOfData`, `AddressOfRawData`, `PointerToRawData`) and `entry`. CodeView records decode to `entry.PdbFileName`, `entry.Age`, the GUID fields and pefile's `entry.Signature_String`, and type 20 decodes to `entry.ExDllCharacteristics` with its `IMAGE_DLLCHARACTERISTICS_EX_*` flags. Other types have `entry` set to `None`. |
 | `DIRECTORY_ENTRY_BASERELOC` | Base relocation blocks, each with `struct` (`VirtualAddress`, `SizeOfBlock`) and `entries`. Each entry has `type`, `rva` and `base_rva`. Built on first access, because large DLLs carry tens of thousands of entries. Empty when the file has none. |
 | `DIRECTORY_ENTRY_RESOURCE` | The resource tree's root, or `None` when the file has no readable resource directory. A directory has `struct` (`Characteristics`, `TimeDateStamp`, `MajorVersion`, `MinorVersion`, `NumberOfNamedEntries`, `NumberOfIdEntries`) and `entries`. Each entry has `struct` (`Name`, `OffsetToData`, `NameOffset`, `Id`, `DataIsDirectory`, `OffsetToDirectory`), `name` (with `string`, `decode()` and `str()`, or `None` for ID entries), `id`, and either `directory` or `data`. A `data` leaf has `struct` (`OffsetToData`, `Size`, `CodePage`, `Reserved`), `lang` and `sublang`. Read a leaf's bytes with `pe.get_data(leaf.data.struct.OffsetToData, leaf.data.struct.Size)`. The per-block directories under RT_STRING also have `strings`, a dict from string ID to text, as in pefile. Built on first access. |
+| `VS_VERSIONINFO`, `VS_FIXEDFILEINFO`, `FileInfo` | Version information from RT_VERSION, as in pefile. `VS_VERSIONINFO` entries have `Length`, `ValueLength`, `Type` and `Key`. `VS_FIXEDFILEINFO` entries have the 13 fixed fields, from `Signature` to `FileDateLS`. `FileInfo` holds one list per version resource of StringFileInfo and VarFileInfo blocks, each with `Length`, `ValueLength`, `Type` and `Key`. A StringFileInfo block has `StringTable`, whose tables have `LangID` and `entries` (a dict of bytes to bytes). A VarFileInfo block has `Var`, whose entries have `entry` (for example `{b'Translation': '0x0409 0x04b0'}`). Like pefile, these attributes are missing when the file has no readable version information, so check with `hasattr`. |
 | `RICH_HEADER` | The decoded Rich header, with `checksum`, `values` (flattened `comp_id, count` pairs), `key`, `raw_data` and `clear_data`, or `None` when the file has none. |
 | `DIRECTORY_ENTRY_EXPORT` | Has `symbols`, a list where each symbol has `name` (bytes or `None`), `ordinal`, `address` (RVA) and `forwarder` (bytes or `None`). |
 
@@ -127,7 +128,8 @@ the two disagree in these cases:
 - **Corrupt delay-import thunk tables.** pefile gives up on a thunk table that repeats one address 15 times or spreads its addresses over more than 128 MB. peoxide does not apply those two heuristics, so on such a table it may return entries where pefile returns none.
 - **IMAGE_DEBUG_TYPE_MISC records.** pefile decodes these pre-PDB debug records. peoxide leaves their `entry` as `None`.
 - **Relocation entries.** They carry `type`, `rva` and `base_rva` but not pefile's per-entry `struct`. `DIRECTORY_ENTRY_BASERELOC` is an empty list, not undefined, when there are no relocations.
-- **Version information.** pefile also decodes RT_VERSION into `FileInfo`, `StringTable` and `VS_FIXEDFILEINFO`. peoxide does not yet. Also, `DIRECTORY_ENTRY_RESOURCE` is `None`, not undefined, when the file has no readable resource directory.
+- **No resource directory.** `DIRECTORY_ENTRY_RESOURCE` is `None`, not undefined, when the file has no readable resource directory.
+- **Version blocks whose offsets wrap past 4 GiB.** pefile aligns version offsets with a 32-bit mask, and on a crafted resource that wraps it can loop forever. peoxide stops reading that block instead.
 - **Scope.** peoxide cannot modify or write PE files.
 
 ## Correctness
@@ -153,19 +155,19 @@ and then reading every header, section, import and export back out, so a parser 
 by deferring work. Before timing, it checks that peoxide's results equal pefile's on every file.
 Garbage collection is disabled while timing, parser order is shuffled per file, one warm-up round
 is discarded, and the median round is reported. pefile is timed twice. Once it is limited to the
-work peoxide does (headers, sections, imports, delay imports, exports), and once it runs its
-default full parse.
+work peoxide does (headers, sections, imports, delay imports, exports, debug, relocations and
+resources with their string tables and version info), and once it runs its default full parse.
 
-Results for the 75 DLLs in `C:\Windows\System32\wbem` (25 MB, 3 rounds, release build, one Windows 11 machine):
+Results for the 75 DLLs in `C:\Windows\System32\wbem` (25 MB, 5 rounds, release build, one Windows 11 machine):
 
 | Parser | Total | Per file | vs peoxide |
 |---|---:|---:|---:|
-| peoxide | 14.4 ms | 0.192 ms | 1.0x |
-| pefile (same work as peoxide) | 296.5 ms | 3.953 ms | 20.6x |
-| pefile (default full parse) | 3,063.6 ms | 40.848 ms | 212.5x |
+| peoxide | 25.0 ms | 0.334 ms | 1.0x |
+| pefile (same work as peoxide) | 1,003.7 ms | 13.383 ms | 40.1x |
+| pefile (default full parse) | 3,039.2 ms | 40.523 ms | 121.4x |
 
 The scoped row is the fair comparison. The full-parse row is what you get from a plain
-`pefile.PE(path)`, which also parses resources, relocations, debug data and more.
+`pefile.PE(path)`, which also parses TLS, load config, bound imports and more.
 To reproduce, build in release mode first:
 
 ```sh

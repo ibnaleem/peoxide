@@ -116,6 +116,7 @@ def details(pe, rvas, offsets):
         ],
         "rich header": rich_header(pe),
         "resources": resource_tree(getattr(pe, "DIRECTORY_ENTRY_RESOURCE", None)),
+        "version info": version_info(pe),
     }
 
 
@@ -138,6 +139,36 @@ def resource_tree(directory):
             for e in directory.entries
         ],
         list(directory.strings.items()) if hasattr(directory, "strings") else None,
+    )
+
+
+VERSION_HEADER_FIELDS = ["Length", "ValueLength", "Type"]
+FIXED_FILE_INFO_FIELDS = [
+    entry.split(",")[1] for entry in pefile.PE.__VS_FIXEDFILEINFO_format__[1]
+]
+
+
+def version_info(pe):
+    """VS_VERSIONINFO, VS_FIXEDFILEINFO and FileInfo; None for an attribute the object lacks."""
+
+    def fields(s, names):
+        return [getattr(s, f) for f in names]
+
+    def each(obj, attr, convert):
+        return [convert(item) for item in getattr(obj, attr)] if hasattr(obj, attr) else None
+
+    def block(b):
+        return (
+            fields(b, VERSION_HEADER_FIELDS),
+            b.Key,
+            each(b, "StringTable", lambda t: (fields(t, VERSION_HEADER_FIELDS), t.LangID, list(t.entries.items()))),
+            each(b, "Var", lambda v: (fields(v, VERSION_HEADER_FIELDS), getattr(v, "entry", None))),
+        )
+
+    return (
+        each(pe, "VS_VERSIONINFO", lambda v: fields(v, VERSION_HEADER_FIELDS + ["Key"])),
+        each(pe, "VS_FIXEDFILEINFO", lambda f: fields(f, FIXED_FILE_INFO_FIELDS)),
+        each(pe, "FileInfo", lambda blocks: [block(b) for b in blocks]),
     )
 
 

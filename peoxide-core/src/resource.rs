@@ -1,6 +1,5 @@
-//! The resource tree, following pefile's `parse_resources_directory`.
-//!
-//! RT_STRING tables and version information, which pefile also decodes, are not parsed.
+//! The resource tree, following pefile's `parse_resources_directory`, with RT_STRING tables.
+//! Version information is decoded from the finished tree in `version.rs`.
 
 use crate::Pe;
 
@@ -126,25 +125,8 @@ impl Walk<'_> {
         self.read_exact(rva, 2).map_or(0, |b| u16_at(b, 0))
     }
 
-    /// pefile's `get_string_u_at_rva`: up to `max_units` UTF-16 units, stopping at a NUL unit.
     fn string_at(&self, rva: i64, max_units: u16) -> Option<Vec<u8>> {
-        if max_units == 0 {
-            return Some(Vec::new());
-        }
-        self.read(rva, 2)?;
-        let max = max_units as i64 * 2;
-        let mut bytes = self.read(rva, max.min(FIRST_STRING_READ))?.to_vec();
-        let has_nul = |b: &[u8]| b.as_chunks::<2>().0.contains(&[0, 0]);
-        if !has_nul(&bytes) && bytes.len() as i64 == FIRST_STRING_READ && max > FIRST_STRING_READ {
-            bytes.extend_from_slice(self.read(rva + FIRST_STRING_READ, max - FIRST_STRING_READ)?);
-        }
-        let units = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&u| u16::from_le_bytes(u))
-            .take_while(|&u| u != 0);
-        Some(encode_units(units))
+        self.pe.utf16_string_at(self.data, rva, max_units as i64)
     }
 
     /// Decodes every string block under an RT_STRING type directory.
@@ -260,6 +242,32 @@ impl Walk<'_> {
 }
 
 impl Pe {
+    /// pefile's `get_string_u_at_rva`: up to `max_units` UTF-16 units, stopping at a NUL unit.
+    /// `None` where pefile raises, and for a negative `max_units`, on which pefile never returns.
+    pub(crate) fn utf16_string_at(&self, data: &[u8], rva: i64, max_units: i64) -> Option<Vec<u8>> {
+        let read = |rva: i64, length: i64| data.get(self.data_range(rva, Some(length))?);
+        if max_units == 0 {
+            return Some(Vec::new());
+        }
+        if max_units < 0 {
+            return None;
+        }
+        read(rva, 2)?;
+        let max = max_units.saturating_mul(2);
+        let mut bytes = read(rva, max.min(FIRST_STRING_READ))?.to_vec();
+        let has_nul = |b: &[u8]| b.as_chunks::<2>().0.contains(&[0, 0]);
+        if !has_nul(&bytes) && bytes.len() as i64 == FIRST_STRING_READ && max > FIRST_STRING_READ {
+            bytes.extend_from_slice(read(rva + FIRST_STRING_READ, max - FIRST_STRING_READ)?);
+        }
+        let units = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&u| u16::from_le_bytes(u))
+            .take_while(|&u| u != 0);
+        Some(encode_units(units))
+    }
+
     pub(crate) fn parse_resources(&self, data: &[u8]) -> Option<ResourceDirectory> {
         let directory = self
             .headers

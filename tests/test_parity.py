@@ -449,6 +449,65 @@ def test_resource_entries_have_directory_or_data():
     assert hasattr(leaf, "data") and not hasattr(leaf, "directory")
 
 
+VERSION_HEADER_FIELDS = ["Length", "ValueLength", "Type"]
+FIXED_FILE_INFO_FIELDS = [
+    "Signature", "StrucVersion", "FileVersionMS", "FileVersionLS", "ProductVersionMS",
+    "ProductVersionLS", "FileFlagsMask", "FileFlags", "FileOS", "FileType", "FileSubtype",
+    "FileDateMS", "FileDateLS",
+]
+
+
+def version_info(pe):
+    """Every version field peoxide exposes; None for an attribute the object lacks."""
+
+    def fields(s, names):
+        return [getattr(s, f) for f in names]
+
+    def each(obj, attr, convert):
+        return [convert(item) for item in getattr(obj, attr)] if hasattr(obj, attr) else None
+
+    def table(t):
+        return fields(t, VERSION_HEADER_FIELDS), t.LangID, list(t.entries.items())
+
+    def var(v):
+        return fields(v, VERSION_HEADER_FIELDS), getattr(v, "entry", None)
+
+    def block(b):
+        return fields(b, VERSION_HEADER_FIELDS), b.Key, each(b, "StringTable", table), each(b, "Var", var)
+
+    return (
+        each(pe, "VS_VERSIONINFO", lambda v: fields(v, VERSION_HEADER_FIELDS + ["Key"])),
+        each(pe, "VS_FIXEDFILEINFO", lambda f: fields(f, FIXED_FILE_INFO_FIELDS)),
+        each(pe, "FileInfo", lambda blocks: [block(b) for b in blocks]),
+    )
+
+
+def test_version_info(pair):
+    ours, theirs = pair
+    assert version_info(ours) == version_info(theirs)
+
+
+def test_corpus_has_version_strings_and_vars():
+    blocks = [b for p in CORPUS for blocks in peoxide.PE(str(p)).FileInfo for b in blocks]
+    assert any(t.entries for b in blocks if hasattr(b, "StringTable") for t in b.StringTable)
+    assert any(hasattr(v, "entry") for b in blocks if hasattr(b, "Var") for v in b.Var)
+
+
+def test_missing_version_info_raises_like_pefile():
+    data = bytearray(CORPUS[0].read_bytes())
+    pe = peoxide.PE(data=bytes(data))
+    version = next(e for e in pe.DIRECTORY_ENTRY_RESOURCE.entries if e.id == 16)
+    leaf = version.directory.entries[0].directory.entries[0].data.struct
+    key = pe.get_offset_from_rva(leaf.OffsetToData) + 6  # past Length, ValueLength, Type
+    assert data[key : key + 30] == "VS_VERSION_INFO".encode("utf-16-le")
+    data[key] = ord("X")
+    ours, theirs = peoxide.PE(data=bytes(data)), pefile.PE(data=bytes(data))
+    for attr in ["VS_VERSIONINFO", "VS_FIXEDFILEINFO", "FileInfo"]:
+        assert not hasattr(theirs, attr)
+        with pytest.raises(AttributeError):
+            getattr(ours, attr)
+
+
 def test_exports(pair):
     ours, theirs = pair
     export_dir = getattr(theirs, "DIRECTORY_ENTRY_EXPORT", None)

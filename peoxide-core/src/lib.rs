@@ -10,6 +10,7 @@ mod resource;
 pub use reloc::{Relocation, RelocationBlock};
 pub use resource::{ResourceChild, ResourceData, ResourceDirectory, ResourceEntry};
 mod rich;
+mod version;
 pub use address::{SectionLayout, clamp, entropy};
 pub use goblin::error::Error;
 pub use goblin::pe::data_directories::DataDirectory;
@@ -17,6 +18,7 @@ pub use goblin::pe::section_table::SectionTable as Section;
 pub use headers::*;
 pub use imphash::ordinal_name;
 pub use rich::RichHeader;
+pub use version::{BlockHeader, FileInfo, FixedFileInfo, StringTable, Var, Version, VersionInfo};
 
 use goblin::pe::PE;
 use goblin::pe::export::ExportAddressTableEntry;
@@ -40,6 +42,7 @@ pub struct Pe {
     pub relocations: Vec<RelocationBlock>,
     /// `None` where pefile leaves `DIRECTORY_ENTRY_RESOURCE` undefined.
     pub resources: Option<ResourceDirectory>,
+    pub version: Version,
 }
 
 pub struct ImportDll {
@@ -134,12 +137,14 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
         rich_header: rich::parse(data, optional_header_offset),
         relocations: Vec::new(),
         resources: None,
+        version: Version::default(),
     };
     // These directories are read through RVAs, which need the section layouts above.
     pe.delay_imports = pe.parse_delay_imports(data);
     pe.debug = pe.parse_debug_directory(data);
     pe.relocations = pe.parse_relocations(data);
     pe.resources = pe.parse_resources(data);
+    pe.version = pe.parse_version(data);
     Ok(pe)
 }
 
