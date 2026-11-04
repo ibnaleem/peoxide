@@ -191,6 +191,10 @@ The repository is a Cargo workspace with two crates:
 - `peoxide-core` is the parser. It is plain Rust with no Python dependency, so you can test it with `cargo test`.
 - `peoxide-py` holds the PyO3 bindings. maturin builds it into the `peoxide` Python module.
 
+## Versioning
+
+peoxide follows [Semantic Versioning](https://semver.org). Both crates and the Python package share one version, set in `[workspace.package]` in the root `Cargo.toml`. maturin reads it from there, so there is no second place to edit. While the version is 0.x, a minor release may break the API.
+
 ## License
 
 [GPL-3.0](LICENSE)
