@@ -53,6 +53,19 @@ uv pip install maturin
 uv run maturin develop --uv --release
 ```
 
+## Supported platforms
+
+peoxide needs Python 3.8 or newer. CI builds these wheels:
+
+| OS | Architectures |
+| --- | --- |
+| Linux (manylinux) | x86_64, x86, aarch64, armv7, s390x, ppc64le |
+| Linux (musllinux 1.2) | x86_64, x86, aarch64, armv7 |
+| Windows | x64, x86, arm64 |
+| macOS | x86_64 |
+
+macOS arm64 wheels are not built right now. Apple Silicon users can build from source, as in [Install](#install). The test suite runs on Windows only.
+
 ## API
 
 `peoxide.PE(name=None, data=None)` parses a file path or a `bytes` object. Pass exactly one.
