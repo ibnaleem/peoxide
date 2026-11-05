@@ -240,23 +240,22 @@ fn exports(data: &[u8], pe: &PE, file_alignment: u32, opts: &ParseOptions) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goblin::pe::header::{COFF_MACHINE_X86_64, DOS_MAGIC, PE_MAGIC};
+    use goblin::pe::header::{COFF_MACHINE_X86, COFF_MACHINE_X86_64, DOS_MAGIC, PE_MAGIC};
+    use goblin::pe::optional_header::{MAGIC_32, MAGIC_64};
 
-    const KERNEL32: &str = r"C:\Windows\System32\kernel32.dll";
+    pub(crate) const DLL: &[u8] = include_bytes!("../../tests/fixtures/sample64.dll");
+    const EXE: &[u8] = include_bytes!("../../tests/fixtures/sample32.exe");
+    const DRIVER: &[u8] = include_bytes!("../../tests/fixtures/driver.sys");
 
     #[test]
-    fn parses_kernel32() {
-        let data = std::fs::read(KERNEL32).unwrap();
-        let pe = parse(&data).unwrap();
+    fn parses_the_pe32_plus_dll() {
+        let pe = parse(DLL).unwrap();
         let headers = &pe.headers;
 
         assert_eq!(headers.dos_header.e_magic, DOS_MAGIC);
         assert_eq!(headers.signature, PE_MAGIC);
         assert_eq!(headers.file_header.machine, COFF_MACHINE_X86_64);
-        assert_eq!(
-            headers.optional_header.magic,
-            goblin::pe::optional_header::MAGIC_64
-        );
+        assert_eq!(headers.optional_header.magic, MAGIC_64);
         assert!(headers.optional_header.base_of_data.is_none());
         assert_eq!(headers.optional_header.data_directory.len(), 16);
         assert!(headers.optional_header.data_directory[0].virtual_address != 0);
@@ -267,23 +266,35 @@ mod tests {
         );
         assert_eq!(&pe.sections[0].name, b".text\0\0\0");
 
-        assert!(
-            pe.imports
-                .iter()
-                .any(|dll| dll.dll.eq_ignore_ascii_case(b"ntdll.dll"))
-        );
-        let create_file = pe
+        assert_eq!(pe.imports.len(), 1);
+        assert_eq!(pe.imports[0].dll, b"ntdll.dll");
+        let exports: Vec<_> = pe
             .exports
             .iter()
-            .find(|e| e.name.as_deref() == Some(b"CreateFileW"))
-            .expect("kernel32 exports CreateFileW");
-        assert!(create_file.address != 0);
+            .map(|e| (e.name.as_deref(), e.ordinal, e.address))
+            .collect();
+        assert_eq!(
+            exports,
+            [
+                (Some(&b"Alpha"[..]), 1, 0x1000),
+                (Some(&b"Gamma"[..]), 3, 0x1008),
+                (None, 2, 0x1004)
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_the_pe32_exe() {
+        let headers = parse(EXE).unwrap().headers;
+        assert_eq!(headers.file_header.machine, COFF_MACHINE_X86);
+        assert_eq!(headers.optional_header.magic, MAGIC_32);
+        assert_eq!(headers.optional_header.base_of_data, Some(0x2000));
     }
 
     #[test]
     fn maps_rvas_and_offsets_through_sections() {
-        let data = std::fs::read(KERNEL32).unwrap();
-        let pe = parse(&data).unwrap();
+        let data = DLL;
+        let pe = parse(data).unwrap();
         let text = &pe.sections[0];
         let rva = text.virtual_address as i64 + 0x10;
         let offset = pe.offset_from_rva(rva).unwrap();
@@ -299,8 +310,8 @@ mod tests {
 
     #[test]
     fn finds_overlay_and_entropy() {
-        let data = std::fs::read(KERNEL32).unwrap();
-        let with_overlay = [data.as_slice(), b"appended"].concat();
+        assert_eq!(parse(DLL).unwrap().overlay_offset(), None);
+        let with_overlay = [DLL, b"appended"].concat();
         let pe = parse(&with_overlay).unwrap();
         let offset = pe.overlay_offset().expect("appended bytes are an overlay");
         assert!(with_overlay[offset..].ends_with(b"appended"));
@@ -316,20 +327,17 @@ mod tests {
         assert_eq!(ordinal_name(b"oleaut32.dll", 65000), b"ord65000");
         assert_eq!(ordinal_name(b"custom.dll", 7), b"ord7");
 
-        let pe = parse(&std::fs::read(KERNEL32).unwrap()).unwrap();
-        let imports = pe.imphash_input().unwrap();
-        assert!(
-            imports
-                .split(',')
-                .all(|pair| pair.contains('.') && pair == pair.to_lowercase())
+        let pe = parse(DLL).unwrap();
+        assert_eq!(
+            pe.imphash_input().unwrap(),
+            "ntdll.rtlallocateheap,ntdll.rtlfreeheap"
         );
-        assert!(!imports.contains(".dll."), "known extensions are stripped");
-        assert!(pe.exphash_input().unwrap().contains("createfilew"));
+        assert_eq!(pe.exphash_input().unwrap(), "alpha,gamma");
     }
 
     #[test]
     fn decodes_the_codeview_pdb_record() {
-        let pe = parse(&std::fs::read(KERNEL32).unwrap()).unwrap();
+        let pe = parse(DLL).unwrap();
         let codeview = pe
             .debug
             .iter()
@@ -339,32 +347,29 @@ mod tests {
                 }
                 _ => None,
             })
-            .expect("kernel32 has an RSDS record");
-        let name = codeview.1.unwrap();
-        assert!(name.to_ascii_lowercase().starts_with(b"kernel32.pdb"));
+            .expect("the DLL fixture has an RSDS record");
+        assert!(codeview.1.unwrap().starts_with(b"sample64.pdb"));
         let signature = codeview.0.pdb70_signature_string().unwrap();
         assert!(signature.len() > 32 && signature.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
     fn classifies_dll_exe_and_driver() {
-        let system32 = std::path::Path::new(r"C:\Windows\System32");
-        let classify = |name: &str| {
-            let pe = parse(&std::fs::read(system32.join(name)).unwrap()).unwrap();
+        let classify = |data| {
+            let pe = parse(data).unwrap();
             (pe.is_dll(), pe.is_exe(), pe.is_driver())
         };
-        assert_eq!(classify("kernel32.dll"), (true, false, false));
-        assert_eq!(classify("notepad.exe"), (false, true, false));
-        assert_eq!(classify(r"drivers\ntfs.sys"), (false, false, true));
+        assert_eq!(classify(DLL), (true, false, false));
+        assert_eq!(classify(EXE), (false, true, false));
+        assert_eq!(classify(DRIVER), (false, false, true));
     }
 
     #[test]
     fn rejects_garbage_and_truncated_input() {
-        let data = std::fs::read(KERNEL32).unwrap();
         assert!(parse(b"not a pe file").is_err());
         assert!(parse(&[]).is_err());
         for len in [2, 64, 0x100, 0x400] {
-            assert!(parse(&data[..len]).is_err(), "truncated to {len} bytes");
+            assert!(parse(&DLL[..len]).is_err(), "truncated to {len} bytes");
         }
     }
 }

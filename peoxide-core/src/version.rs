@@ -387,11 +387,9 @@ mod tests {
         );
     }
 
-    /// Values pefile 2024.8.26 reports for kernel32.dll that hold across Windows builds.
     #[test]
-    fn kernel32_version_matches_pefile() {
-        let data = std::fs::read(r"C:\Windows\System32\kernel32.dll").unwrap();
-        let pe = crate::parse(&data).unwrap();
+    fn reads_the_dll_fixture_version_info() {
+        let pe = crate::parse(crate::tests::DLL).unwrap();
         let info = &pe.version.vs_versioninfo.as_ref().unwrap()[0];
         assert_eq!(info.key, b"VS_VERSION_INFO");
         assert_eq!((info.header.value_length, info.header.type_), (52, 0));
@@ -407,7 +405,7 @@ mod tests {
         assert_eq!(table.lang_id, b"040904B0");
         assert_eq!(
             table.entries[0],
-            (b"CompanyName".to_vec(), b"Microsoft Corporation".to_vec())
+            (b"CompanyName".to_vec(), b"peoxide".to_vec())
         );
         assert_eq!(vars.key, b"VarFileInfo");
         let entry = vars.var.as_ref().unwrap()[0].entry.as_ref().unwrap();
