@@ -1,7 +1,7 @@
 [package]
 name = "peoxide-py"
 description = "A fast PE file parser library for Python, written in Rust."
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

@@ -53,6 +53,19 @@ uv pip install maturin
 uv run maturin develop --uv --release
 ```
 
+## Supported platforms
+
+peoxide needs Python 3.8 or newer. CI builds these wheels:
+
+| OS | Architectures |
+| --- | --- |
+| Linux (manylinux) | x86_64, x86, aarch64, armv7, s390x, ppc64le |
+| Linux (musllinux 1.2) | x86_64, x86, aarch64, armv7 |
+| Windows | x64, x86, arm64 |
+| macOS | x86_64 |
+
+macOS arm64 wheels are not built right now. Apple Silicon users can build from source, as in [Install](#install). The test suite runs on Windows only.
+
 ## API
 
 `peoxide.PE(name=None, data=None)` parses a file path or a `bytes` object. Pass exactly one.
@@ -190,6 +203,10 @@ The repository is a Cargo workspace with two crates:
 
 - `peoxide-core` is the parser. It is plain Rust with no Python dependency, so you can test it with `cargo test`.
 - `peoxide-py` holds the PyO3 bindings. maturin builds it into the `peoxide` Python module.
+
+## Versioning
+
+peoxide follows [Semantic Versioning](https://semver.org). Both crates and the Python package share one version, set in `[workspace.package]` in the root `Cargo.toml`. maturin reads it from there, so there is no second place to edit. While the version is 0.x, a minor release may break the API.
 
 ## License
 
