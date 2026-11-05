@@ -1,4 +1,4 @@
-"""Field-by-field comparison of peoxide against pefile on real Windows binaries."""
+"""Field-by-field comparison of peoxide against pefile on Windows binaries and tests/fixtures."""
 
 import os
 from pathlib import Path
@@ -9,7 +9,7 @@ import pytest
 import peoxide
 
 WINDIR = Path(os.environ.get("WINDIR", r"C:\Windows"))
-CORPUS = [
+SYSTEM = [
     WINDIR / "System32" / "kernel32.dll",
     WINDIR / "System32" / "ntdll.dll",
     WINDIR / "System32" / "user32.dll",
@@ -17,7 +17,8 @@ CORPUS = [
     WINDIR / "System32" / "drivers" / "ntfs.sys",
     WINDIR / "SysWOW64" / "kernel32.dll",
 ]
-CORPUS = [p for p in CORPUS if p.exists()]
+SYSTEM = [p for p in SYSTEM if p.exists()]
+CORPUS = SYSTEM + sorted((Path(__file__).parent / "fixtures").iterdir())
 
 DOS_FIELDS = [
     "e_magic",
@@ -93,7 +94,7 @@ SECTION_FIELDS = [
     "Characteristics",
 ]
 
-pytestmark = pytest.mark.skipif(not CORPUS, reason="needs Windows system binaries")
+pytestmark = pytest.mark.skipif(not SYSTEM, reason="needs Windows system binaries")
 
 
 @pytest.fixture(params=CORPUS, ids=lambda p: f"{p.parent.name}/{p.name}", scope="module")
@@ -488,7 +489,8 @@ def test_version_info(pair):
 
 
 def test_corpus_has_version_strings_and_vars():
-    blocks = [b for p in CORPUS for blocks in peoxide.PE(str(p)).FileInfo for b in blocks]
+    infos = [getattr(peoxide.PE(str(p)), "FileInfo", []) for p in CORPUS]
+    blocks = [b for info in infos for blocks in info for b in blocks]
     assert any(t.entries for b in blocks if hasattr(b, "StringTable") for t in b.StringTable)
     assert any(hasattr(v, "entry") for b in blocks if hasattr(b, "Var") for v in b.Var)
 
