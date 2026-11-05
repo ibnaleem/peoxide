@@ -64,7 +64,7 @@ peoxide needs Python 3.8 or newer. CI builds these wheels:
 | Windows | x64, x86, arm64 |
 | macOS | x86_64 |
 
-macOS arm64 wheels are not built right now. Apple Silicon users can build from source, as in [Install](#install). The test suite runs on Windows only.
+macOS arm64 wheels are not built right now. Apple Silicon users can build from source, as in [Install](#install). The Rust tests run on Windows and Linux against synthetic PE files in `tests/fixtures`. The pefile parity tests also read Windows system binaries, so they run on Windows only.
 
 ## API
 
