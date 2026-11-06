@@ -245,3 +245,16 @@ impl Pe {
         dlls
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn normalize_va_leaves_small_values_below_a_huge_image_base() {
+        // ImageBase 0xFFFFFFFFFFFFF000 is negative as an i64.
+        let pe = crate::parse(include_bytes!(
+            "../../tests/fixtures/crafted/top_image_base.dll"
+        ))
+        .unwrap();
+        assert_eq!(pe.normalize_va(0x1000), 0x1000);
+    }
+}
