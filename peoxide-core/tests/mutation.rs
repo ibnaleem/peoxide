@@ -71,7 +71,15 @@ fn exercise(pe: &Pe, data: &[u8]) {
         let _ = &data[offset..];
     }
 
-    let mut probes = vec![-1, 0, 1, i64::MIN, i64::MAX, pe.file_size as i64, pe.header_size];
+    let mut probes = vec![
+        -1,
+        0,
+        1,
+        i64::MIN,
+        i64::MAX,
+        pe.file_size as i64,
+        pe.header_size,
+    ];
     for d in &pe.headers.optional_header.data_directory {
         probes.extend([d.virtual_address as i64, d.size as i64]);
     }
@@ -91,7 +99,10 @@ fn exercise(pe: &Pe, data: &[u8]) {
         let _ = (pe.section_by_rva(value), pe.section_by_offset(value));
         let _ = (pe.offset_from_rva(value), pe.rva_from_offset(value));
         for &(section, layout) in &sections {
-            let _ = (layout.contains_rva(value), layout.contains_offset(section, value));
+            let _ = (
+                layout.contains_rva(value),
+                layout.contains_offset(section, value),
+            );
             let _ = (layout.offset_from_rva(value), layout.rva_from_offset(value));
         }
         for length in lengths {
