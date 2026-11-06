@@ -373,4 +373,19 @@ mod tests {
             assert!(parse(&DLL[..len]).is_err(), "truncated to {len} bytes");
         }
     }
+
+    #[test]
+    fn crafted_fixtures_parse_without_panicking() {
+        let crafted: [&[u8]; 4] = [
+            include_bytes!("../../tests/fixtures/crafted/huge_count.dll"),
+            include_bytes!("../../tests/fixtures/crafted/self_reference.dll"),
+            include_bytes!("../../tests/fixtures/crafted/top_image_base.dll"),
+            include_bytes!("../../tests/fixtures/crafted/signed_image_base.dll"),
+        ];
+        for (i, data) in crafted.into_iter().enumerate() {
+            if let Err(e) = parse(data) {
+                panic!("crafted fixture {i}: {e}");
+            }
+        }
+    }
 }
