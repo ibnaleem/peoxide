@@ -61,7 +61,8 @@ pub struct ImportSymbol {
 
 pub struct ExportSymbol {
     pub name: Option<Vec<u8>>,
-    pub ordinal: u32,
+    /// OrdinalBase + index, which pefile does not wrap at 2**32.
+    pub ordinal: u64,
     /// RVA of the exported code/data, or of the forwarder string.
     pub address: u32,
     pub forwarder: Option<Vec<u8>>,
@@ -213,7 +214,7 @@ fn exports(data: &[u8], pe: &PE, file_alignment: u32, opts: &ParseOptions) -> Ve
         };
         (address != 0).then(|| ExportSymbol {
             name,
-            ordinal: base.wrapping_add(index as u32),
+            ordinal: u64::from(base).saturating_add(index as u64),
             address,
             forwarder,
         })

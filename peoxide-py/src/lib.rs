@@ -232,7 +232,7 @@ py_class!(ImportDescData from peoxide_core::ImportDll as (py, c) {
 
 py_class!(ExportData from peoxide_core::ExportSymbol as (py, c) {
     name: Option<Py<PyBytes>> = c.name.as_deref().map(|n| bytes(py, n)),
-    ordinal: u32 = c.ordinal,
+    ordinal: u64 = c.ordinal,
     address: u32 = c.address,
     forwarder: Option<Py<PyBytes>> = c.forwarder.as_deref().map(|f| bytes(py, f)),
 });
