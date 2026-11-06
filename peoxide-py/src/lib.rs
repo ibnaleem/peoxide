@@ -35,6 +35,17 @@ macro_rules! py_class {
     };
 }
 
+/// Runs code that calls into the core parser, turning a panic into `PEFormatError`. A panic
+/// would reach Python as PanicException, which slips past `except Exception`.
+fn no_panic<T>(f: impl FnOnce() -> T) -> PyResult<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| {
+        PEFormatError::new_err(
+            "internal peoxide error while reading this file; please report it, \
+             with the file, at https://github.com/ibnaleem/peoxide/issues",
+        )
+    })
+}
+
 fn bytes(py: Python<'_>, b: &[u8]) -> Py<PyBytes> {
     PyBytes::new(py, b).unbind()
 }
@@ -208,12 +219,14 @@ impl Section {
         start: Option<i64>,
         length: Option<i64>,
         ignore_padding: bool,
-    ) -> &'a [u8] {
+    ) -> PyResult<&'a [u8]> {
         let file = self.file.as_bytes(py);
-        let range = self
-            .layout
-            .data_range(&self.table, start, length, ignore_padding);
-        &file[peoxide_core::clamp(range, file.len())]
+        no_panic(|| {
+            let range = self
+                .layout
+                .data_range(&self.table, start, length, ignore_padding);
+            &file[peoxide_core::clamp(range, file.len())]
+        })
     }
 }
 
@@ -717,49 +730,53 @@ impl Section {
         start: Option<i64>,
         length: Option<i64>,
         ignore_padding: bool,
-    ) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, self.data(py, start, length, ignore_padding))
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(
+            py,
+            self.data(py, start, length, ignore_padding)?,
+        ))
     }
 
     /// Shannon entropy of `get_data()`, in bits per byte.
-    fn get_entropy(&self, py: Python<'_>) -> f64 {
-        peoxide_core::entropy(self.data(py, None, None, false))
+    fn get_entropy(&self, py: Python<'_>) -> PyResult<f64> {
+        let data = self.data(py, None, None, false)?;
+        no_panic(|| peoxide_core::entropy(data))
     }
 
     fn get_hash_md5(&self, py: Python<'_>) -> PyResult<String> {
-        hexdigest(py, "md5", self.data(py, None, None, false))
+        hexdigest(py, "md5", self.data(py, None, None, false)?)
     }
 
     fn get_hash_sha1(&self, py: Python<'_>) -> PyResult<String> {
-        hexdigest(py, "sha1", self.data(py, None, None, false))
+        hexdigest(py, "sha1", self.data(py, None, None, false)?)
     }
 
     fn get_hash_sha256(&self, py: Python<'_>) -> PyResult<String> {
-        hexdigest(py, "sha256", self.data(py, None, None, false))
+        hexdigest(py, "sha256", self.data(py, None, None, false)?)
     }
 
     fn get_hash_sha512(&self, py: Python<'_>) -> PyResult<String> {
-        hexdigest(py, "sha512", self.data(py, None, None, false))
+        hexdigest(py, "sha512", self.data(py, None, None, false)?)
     }
 
-    fn contains_rva(&self, rva: i64) -> bool {
-        self.layout.contains_rva(rva)
+    fn contains_rva(&self, rva: i64) -> PyResult<bool> {
+        no_panic(|| self.layout.contains_rva(rva))
     }
 
-    fn contains(&self, rva: i64) -> bool {
-        self.layout.contains_rva(rva)
+    fn contains(&self, rva: i64) -> PyResult<bool> {
+        no_panic(|| self.layout.contains_rva(rva))
     }
 
-    fn contains_offset(&self, offset: i64) -> bool {
-        self.layout.contains_offset(&self.table, offset)
+    fn contains_offset(&self, offset: i64) -> PyResult<bool> {
+        no_panic(|| self.layout.contains_offset(&self.table, offset))
     }
 
-    fn get_offset_from_rva(&self, rva: i64) -> i64 {
-        self.layout.offset_from_rva(rva)
+    fn get_offset_from_rva(&self, rva: i64) -> PyResult<i64> {
+        no_panic(|| self.layout.offset_from_rva(rva))
     }
 
-    fn get_rva_from_offset(&self, offset: i64) -> i64 {
-        self.layout.rva_from_offset(offset)
+    fn get_rva_from_offset(&self, offset: i64) -> PyResult<i64> {
+        no_panic(|| self.layout.rva_from_offset(offset))
     }
 }
 
@@ -1031,21 +1048,23 @@ impl PE {
         rva: i64,
         length: Option<i64>,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        let range = self.pe.data_range(rva, length).ok_or_else(|| {
-            PEFormatError::new_err("data at RVA can't be fetched. Corrupt header?")
-        })?;
-        Ok(PyBytes::new(py, &self.data.as_bytes(py)[range]))
+        let file = self.data.as_bytes(py);
+        let data = no_panic(|| self.pe.data_range(rva, length).map(|range| &file[range]))?
+            .ok_or_else(|| {
+                PEFormatError::new_err("data at RVA can't be fetched. Corrupt header?")
+            })?;
+        Ok(PyBytes::new(py, data))
     }
 
     fn get_offset_from_rva(&self, rva: i64) -> PyResult<i64> {
-        self.pe.offset_from_rva(rva).ok_or_else(|| {
+        no_panic(|| self.pe.offset_from_rva(rva))?.ok_or_else(|| {
             PEFormatError::new_err(format!("data at RVA 0x{rva:x} can't be fetched"))
         })
     }
 
     /// `None` when the offset is past the start of the first section but in none of them.
-    fn get_rva_from_offset(&self, offset: i64) -> Option<i64> {
-        self.pe.rva_from_offset(offset)
+    fn get_rva_from_offset(&self, offset: i64) -> PyResult<Option<i64>> {
+        no_panic(|| self.pe.rva_from_offset(offset))
     }
 
     fn get_section_by_rva<'py>(
@@ -1053,7 +1072,7 @@ impl PE {
         py: Python<'py>,
         rva: i64,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
-        let index = self.pe.section_by_rva(rva);
+        let index = no_panic(|| self.pe.section_by_rva(rva))?;
         index
             .map(|i| self.sections.bind(py).get_item(i))
             .transpose()
@@ -1064,21 +1083,22 @@ impl PE {
         py: Python<'py>,
         offset: i64,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
-        let index = self.pe.section_by_offset(offset);
+        let index = no_panic(|| self.pe.section_by_offset(offset))?;
         index
             .map(|i| self.sections.bind(py).get_item(i))
             .transpose()
     }
 
     /// Offset of data appended past everything the headers describe, or `None`.
-    fn get_overlay_data_start_offset(&self) -> Option<usize> {
-        self.pe.overlay_offset()
+    fn get_overlay_data_start_offset(&self) -> PyResult<Option<usize>> {
+        no_panic(|| self.pe.overlay_offset())
     }
 
     /// The appended data itself, or `None`.
-    fn get_overlay<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
-        let offset = self.pe.overlay_offset()?;
-        Some(PyBytes::new(py, &self.data.as_bytes(py)[offset..]))
+    fn get_overlay<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
+        let file = self.data.as_bytes(py);
+        let overlay = no_panic(|| self.pe.overlay_offset().map(|offset| &file[offset..]))?;
+        Ok(overlay.map(|data| PyBytes::new(py, data)))
     }
 
     /// pefile's imphash: a hash of the lowercase `dll.function` import list, or `""` when
@@ -1086,7 +1106,7 @@ impl PE {
     /// `hashlib` algorithm name, such as `"sha256"`, for a different digest of the same input.
     #[pyo3(signature = (algorithm="md5"))]
     fn get_imphash(&self, py: Python<'_>, algorithm: &str) -> PyResult<String> {
-        self.pe.imphash_input().map_or(Ok(String::new()), |input| {
+        no_panic(|| self.pe.imphash_input())?.map_or(Ok(String::new()), |input| {
             hexdigest(py, algorithm, input.as_bytes())
         })
     }
@@ -1094,7 +1114,7 @@ impl PE {
     /// Like `get_imphash`, over the lowercase names of the named exports.
     #[pyo3(signature = (algorithm="md5"))]
     fn get_exphash(&self, py: Python<'_>, algorithm: &str) -> PyResult<String> {
-        self.pe.exphash_input().map_or(Ok(String::new()), |input| {
+        no_panic(|| self.pe.exphash_input())?.map_or(Ok(String::new()), |input| {
             hexdigest(py, algorithm, input.as_bytes())
         })
     }
@@ -1112,7 +1132,7 @@ impl PE {
     fn DIRECTORY_ENTRY_BASERELOC(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
         self.relocations
             .get_or_try_init(py, || {
-                list(py, &self.pe.relocations, BaseRelocationData::new)
+                no_panic(|| list(py, &self.pe.relocations, BaseRelocationData::new))?
             })
             .map(|l| l.clone_ref(py))
     }
@@ -1123,11 +1143,13 @@ impl PE {
     fn DIRECTORY_ENTRY_RESOURCE(&self, py: Python<'_>) -> PyResult<Option<Py<ResourceDirData>>> {
         self.resources
             .get_or_try_init(py, || {
-                self.pe
-                    .resources
-                    .as_ref()
-                    .map(|r| Py::new(py, ResourceDirData::new(py, r)?))
-                    .transpose()
+                no_panic(|| {
+                    self.pe
+                        .resources
+                        .as_ref()
+                        .map(|r| Py::new(py, ResourceDirData::new(py, r)?))
+                        .transpose()
+                })?
             })
             .map(|r| r.as_ref().map(|r| r.clone_ref(py)))
     }
@@ -1150,18 +1172,18 @@ impl PE {
     }
 
     /// True for a standard executable: not a DLL, not a driver, and marked executable.
-    fn is_exe(&self) -> bool {
-        self.pe.is_exe()
+    fn is_exe(&self) -> PyResult<bool> {
+        no_panic(|| self.pe.is_exe())
     }
 
     /// True when FILE_HEADER has IMAGE_FILE_DLL set.
-    fn is_dll(&self) -> bool {
-        self.pe.is_dll()
+    fn is_dll(&self) -> PyResult<bool> {
+        no_panic(|| self.pe.is_dll())
     }
 
     /// True when the image imports a kernel DLL, or has a PAGE section and a native subsystem.
-    fn is_driver(&self) -> bool {
-        self.pe.is_driver()
+    fn is_driver(&self) -> PyResult<bool> {
+        no_panic(|| self.pe.is_driver())
     }
 }
 
