@@ -145,7 +145,9 @@ def resources(section):
     return section.put(tree + data), len(tree) + len(data)
 
 
-def build(machine, wide, characteristics, subsystem, layout, image_base=0x180000000):
+def build(machine, wide, characteristics, subsystem, layout, image_base=None):
+    if image_base is None:
+        image_base = 0x180000000 if wide else 0x400000
     sections, directories = [], {}
     raw, rva = HEADERS_SIZE, SECTION_ALIGN
     for name, flags, fill in layout:
@@ -168,7 +170,7 @@ def build(machine, wide, characteristics, subsystem, layout, image_base=0x180000
     else:
         optional = struct.pack(
             "<HBB5I4I6H4I2H6I",
-            *[0x10B, 14, 0, *head, sections[1].rva, 0x400000, SECTION_ALIGN, FILE_ALIGN],
+            *[0x10B, 14, 0, *head, sections[1].rva, image_base, SECTION_ALIGN, FILE_ALIGN],
             *[*tail, *reserve],
         )
     optional += b"".join(struct.pack("<2I", *directories.get(i, (0, 0))) for i in range(16))
@@ -220,17 +222,16 @@ def fixtures():
 def crafted():
     """Malformed files the parser must get through without panicking. Not compared with pefile."""
     ntdll = [(b"ntdll.dll", [b"RtlFreeHeap"])]
-    huge_root = struct.pack("<2I4H", 0, 0, 0, 0, 0xFFFF, 0xFFFF)
-    huge_count = [
-        (b".text", CODE, code),
-        (b".rsrc", DATA, lambda s: {DIR_RESOURCE: (s.put(huge_root), len(huge_root))}),
-    ]
-    root_to_itself = struct.pack("<2I4H2I", 0, 0, 0, 0, 0, 1, RT_VERSION, 0x80000000)
-    self_reference = [
-        (b".text", CODE, code),
-        (b".rsrc", DATA, lambda s: {DIR_RESOURCE: (s.put(root_to_itself), len(root_to_itself))}),
-    ]
-    image_base = [
+
+    def resource_root(root):
+        return [
+            (b".text", CODE, code),
+            (b".rsrc", DATA, lambda s: {DIR_RESOURCE: (s.put(root), len(root))}),
+        ]
+
+    huge_count = resource_root(struct.pack("<2I4H", 0, 0, 0, 0, 0xFFFF, 0xFFFF))
+    self_reference = resource_root(struct.pack("<2I4H2I", 0, 0, 0, 0, 0, 1, RT_VERSION, 0x80000000))
+    import_tables = [
         (b".text", CODE, code),
         (
             b".rdata",
@@ -247,8 +248,8 @@ def crafted():
         # The resource root's only entry is the root itself.
         "self_reference.dll": build(AMD64, True, 0x2022, GUI, self_reference),
         # Import addresses (ImageBase + RVA) run past 2**64 and past 2**63.
-        "top_image_base.dll": build(AMD64, True, 0x2022, GUI, image_base, 0xFFFFFFFFFFFFF000),
-        "signed_image_base.dll": build(AMD64, True, 0x2022, GUI, image_base, 0x7FFFFFFFFFFFF000),
+        "top_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0xFFFFFFFFFFFFF000),
+        "signed_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0x7FFFFFFFFFFFF000),
     }
 
 
