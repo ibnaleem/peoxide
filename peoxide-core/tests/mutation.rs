@@ -16,9 +16,17 @@ const FIXTURES: [&[u8]; 3] = [
 /// Share of edits aimed at the headers, section table and data directories.
 const HOT_EDIT_SHARE: f64 = 0.7;
 const TRUNCATE_SHARE: f64 = 0.25;
+/// Most bytes one case overwrites.
+const MAX_EDITS: usize = 32;
 
-/// (hot, region seed, position seed, new byte)
-type Edit = (bool, usize, usize, u8);
+/// One overwritten byte. `region` and `position` are seeds reduced modulo the target range.
+#[derive(Debug)]
+struct Edit {
+    is_hot: bool,
+    region: usize,
+    position: usize,
+    value: u8,
+}
 
 /// The bytes the parser reads structure from: headers with the section table, then each directory.
 fn hot_regions(data: &[u8]) -> Vec<Range<usize>> {
@@ -39,13 +47,13 @@ fn hot_regions(data: &[u8]) -> Vec<Range<usize>> {
 fn mutate(original: &[u8], edits: &[Edit], truncate: Option<usize>) -> Vec<u8> {
     let hot = hot_regions(original);
     let mut data = original.to_vec();
-    for &(is_hot, region, position, value) in edits {
-        let range = if is_hot {
-            hot[region % hot.len()].clone()
+    for edit in edits {
+        let range = if edit.is_hot {
+            hot[edit.region % hot.len()].clone()
         } else {
             0..data.len()
         };
-        data[range.start + position % range.len()] = value;
+        data[range.start + edit.position % range.len()] = edit.value;
     }
     if let Some(len) = truncate {
         data.truncate(len % (data.len() + 1));
@@ -53,8 +61,10 @@ fn mutate(original: &[u8], edits: &[Edit], truncate: Option<usize>) -> Vec<u8> {
     data
 }
 
-/// Everything the Python layer derives from a parsed file.
+/// Calls the model's helpers on boundary probes: type flags, imphash and exphash inputs, overlay,
+/// section entropy, section lookup, RVA and offset conversion, and data ranges.
 fn exercise(pe: &Pe, data: &[u8]) {
+    let sections: Vec<_> = pe.sections.iter().zip(&pe.layouts).collect();
     let _ = (pe.is_dll(), pe.is_exe(), pe.is_driver());
     let _ = (pe.imphash_input(), pe.exphash_input());
     if let Some(offset) = pe.overlay_offset() {
@@ -65,7 +75,7 @@ fn exercise(pe: &Pe, data: &[u8]) {
     for d in &pe.headers.optional_header.data_directory {
         probes.extend([d.virtual_address as i64, d.size as i64]);
     }
-    for (section, layout) in pe.sections.iter().zip(&pe.layouts) {
+    for &(section, layout) in &sections {
         probes.extend([
             section.virtual_address as i64,
             section.pointer_to_raw_data as i64,
@@ -80,15 +90,15 @@ fn exercise(pe: &Pe, data: &[u8]) {
     for &value in &probes {
         let _ = (pe.section_by_rva(value), pe.section_by_offset(value));
         let _ = (pe.offset_from_rva(value), pe.rva_from_offset(value));
+        for &(section, layout) in &sections {
+            let _ = (layout.contains_rva(value), layout.contains_offset(section, value));
+            let _ = (layout.offset_from_rva(value), layout.rva_from_offset(value));
+        }
         for length in lengths {
             if let Some(range) = pe.data_range(value, length) {
                 let _ = &data[range];
             }
-        }
-        for (section, layout) in pe.sections.iter().zip(&pe.layouts) {
-            let _ = (layout.contains_rva(value), layout.contains_offset(section, value));
-            let _ = (layout.offset_from_rva(value), layout.rva_from_offset(value));
-            for length in lengths {
+            for &(section, layout) in &sections {
                 for ignore_padding in [false, true] {
                     let range = layout.data_range(section, Some(value), length, ignore_padding);
                     let _ = &data[clamp(range, data.len())];
@@ -105,6 +115,12 @@ fn edit() -> impl Strategy<Value = Edit> {
         any::<usize>(),
         any::<u8>(),
     )
+        .prop_map(|(is_hot, region, position, value)| Edit {
+            is_hot,
+            region,
+            position,
+            value,
+        })
 }
 
 proptest! {
@@ -113,7 +129,7 @@ proptest! {
     #[test]
     fn mutated_fixtures_never_panic(
         fixture in 0..FIXTURES.len(),
-        edits in prop::collection::vec(edit(), 1..=32),
+        edits in prop::collection::vec(edit(), 1..=MAX_EDITS),
         truncate in prop::option::weighted(TRUNCATE_SHARE, any::<usize>()),
     ) {
         let data = mutate(FIXTURES[fixture], &edits, truncate);
