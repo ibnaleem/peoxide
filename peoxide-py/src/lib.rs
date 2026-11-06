@@ -981,7 +981,15 @@ impl PE {
                 ));
             }
         };
-        let pe = peoxide_core::parse(data.as_bytes())
+        // A panic would reach Python as PanicException, which slips past `except Exception`.
+        let bytes = data.as_bytes();
+        let pe = std::panic::catch_unwind(|| peoxide_core::parse(bytes))
+            .map_err(|_| {
+                PEFormatError::new_err(
+                    "internal peoxide error while parsing this file; please report it, \
+                     with the file, at https://github.com/ibnaleem/peoxide/issues",
+                )
+            })?
             .map_err(|e| PEFormatError::new_err(e.to_string()))?;
         let h = &pe.headers;
 
