@@ -68,10 +68,12 @@ impl Pe {
 
     /// pefile's `normalize_import_va`: turn an in-image VA into an RVA, leave anything else.
     fn normalize_va(&self, va: i64) -> i64 {
-        let base = self.headers.optional_header.image_base as i64;
-        let end = base.saturating_add(self.headers.optional_header.size_of_image as i64);
-        if (base..end).contains(&va) {
-            va - base
+        // i128 holds every u64 ImageBase and its end, so the range matches pefile's ints.
+        let base = i128::from(self.headers.optional_header.image_base);
+        let end = base + i128::from(self.headers.optional_header.size_of_image);
+        if (base..end).contains(&i128::from(va)) {
+            // va lies in [base, end) and base >= 0, so the difference fits an i64.
+            (i128::from(va) - base) as i64
         } else {
             va
         }
