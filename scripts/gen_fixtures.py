@@ -87,15 +87,15 @@ def delay_imports(section, dll, names):
     return section.put(descriptor), len(descriptor)
 
 
-def exports(section, dll, functions, named):
-    """Ordinals start at 1. Functions left out of `named` are exported by ordinal only."""
+def exports(section, dll, functions, named, base=1):
+    """Ordinals start at `base`. Functions left out of `named` are exported by ordinal only."""
     eat = section.put(b"".join(struct.pack("<I", rva) for rva in functions))
     name_rvas = [section.put(name + b"\0", 1) for name, _ in named]
     names = section.put(b"".join(struct.pack("<I", rva) for rva in name_rvas))
     ordinals = section.put(b"".join(struct.pack("<H", index) for _, index in named))
     dll_name = section.put(dll + b"\0", 1)
     directory = struct.pack(
-        "<2I2H7I", 0, 0, 0, 0, dll_name, 1, len(functions), len(named), eat, names, ordinals
+        "<2I2H7I", 0, 0, 0, 0, dll_name, base, len(functions), len(named), eat, names, ordinals
     )
     return section.put(directory), len(directory)
 
@@ -211,8 +211,22 @@ def fixtures():
         (b".text", CODE, code),
         (b".rdata", DATA, lambda s: {DIR_IMPORT: imports(s, True, [(b"ntoskrnl.exe", [b"IoCreateDevice"])])}),
     ]
+    # The second export's ordinal, OrdinalBase + 1, needs 33 bits.
+    high_ordinal_base = [
+        (b".text", CODE, code),
+        (
+            b".rdata",
+            DATA,
+            lambda s: {
+                DIR_EXPORT: exports(
+                    s, b"high_ordinal_base.dll", [TEXT_RVA, TEXT_RVA + 4], [(b"Alpha", 0)], 0xFFFFFFFF
+                )
+            },
+        ),
+    ]
     return {
         "sample64.dll": build(AMD64, True, 0x2022, GUI, dll),
+        "high_ordinal_base.dll": build(AMD64, True, 0x2022, GUI, high_ordinal_base),
         "sample32.exe": build(I386, False, 0x0102, CUI, exe),
         "driver.sys": build(AMD64, True, 0x0022, NATIVE, driver),
         **{f"crafted/{name}": data for name, data in crafted().items()},
