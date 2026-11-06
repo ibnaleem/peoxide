@@ -78,7 +78,11 @@ def test_extreme_addresses_never_panic(value):
         pass
 
 
-FIXTURE_BYTES = [p.read_bytes() for p in sorted((Path(__file__).parent / "fixtures").iterdir())]
+FIXTURE_BYTES = [
+    p.read_bytes()
+    for p in sorted((Path(__file__).parent / "fixtures").rglob("*"))
+    if p.is_file()
+]
 
 
 def test_random_corruption_never_crashes():
