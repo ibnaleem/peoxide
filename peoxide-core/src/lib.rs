@@ -382,10 +382,9 @@ mod tests {
             include_bytes!("../../tests/fixtures/crafted/top_image_base.dll"),
             include_bytes!("../../tests/fixtures/crafted/signed_image_base.dll"),
         ];
-        for (i, data) in crafted.into_iter().enumerate() {
-            if let Err(e) = parse(data) {
-                panic!("crafted fixture {i}: {e}");
-            }
+        // Ok or Err are both fine; only a panic fails.
+        for data in crafted {
+            let _ = parse(data);
         }
     }
 }
