@@ -383,11 +383,12 @@ mod tests {
 
     #[test]
     fn crafted_fixtures_parse_without_panicking() {
-        let crafted: [&[u8]; 4] = [
+        let crafted: [&[u8]; 5] = [
             include_bytes!("../../tests/fixtures/crafted/huge_count.dll"),
             include_bytes!("../../tests/fixtures/crafted/self_reference.dll"),
             include_bytes!("../../tests/fixtures/crafted/top_image_base.dll"),
             include_bytes!("../../tests/fixtures/crafted/signed_image_base.dll"),
+            include_bytes!("../../tests/fixtures/crafted/long_relocations.dll"),
         ];
         // Ok or Err are both fine; only a panic fails.
         for data in crafted {

@@ -17,7 +17,7 @@ HEADERS_SIZE = 0x400
 E_LFANEW = 0x40
 TEXT_RVA = SECTION_ALIGN
 
-DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_DEBUG, DIR_DELAY = 0, 1, 2, 6, 13
+DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_RELOC, DIR_DEBUG, DIR_DELAY = 0, 1, 2, 5, 6, 13
 CODE = 0x60000020
 DATA = 0x40000040
 AMD64, I386 = 0x8664, 0x14C
@@ -245,6 +245,11 @@ def crafted():
 
     huge_count = resource_root(struct.pack("<2I4H", 0, 0, 0, 0, 0xFFFF, 0xFFFF))
     self_reference = resource_root(struct.pack("<2I4H2I", 0, 0, 0, 0, 0, 1, RT_VERSION, 0x80000000))
+    reloc_block = struct.pack("<2I2H", TEXT_RVA, 12, 0xA000, 0)
+    long_relocations = [
+        (b".text", CODE, code),
+        (b".reloc", DATA, lambda s: {DIR_RELOC: (s.put(reloc_block), 0x10000000)}),
+    ]
     import_tables = [
         (b".text", CODE, code),
         (
@@ -264,6 +269,8 @@ def crafted():
         # Import addresses (ImageBase + RVA) run past 2**64 and past 2**63.
         "top_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0xFFFFFFFFFFFFF000),
         "signed_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0x7FFFFFFFFFFFF000),
+        # The base-relocation directory claims 256 MiB in a 2 KiB file.
+        "long_relocations.dll": build(AMD64, True, 0x2022, GUI, long_relocations),
     }
 
 
