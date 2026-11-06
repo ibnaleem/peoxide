@@ -194,7 +194,9 @@ impl Pe {
         let mut rva = directory.virtual_address as i64;
         let mut dlls = Vec::new();
         let mut empty_descriptors = 0;
-        while rva != 0 {
+        // Each descriptor is read from the file, so the walk never spans more than the file.
+        let end = rva.saturating_add(self.file_size as i64);
+        while rva != 0 && rva < end {
             let Some(file_offset) = self.offset_from_rva(rva) else {
                 break;
             };
@@ -213,7 +215,8 @@ impl Pe {
                 (rva - descriptor.int).max(rva - descriptor.iat)
             } else {
                 self.file_size as i64 - file_offset
-            };
+            }
+            .min(self.file_size as i64);
             if empty_descriptors > MAX_EMPTY_DESCRIPTORS {
                 break;
             }
