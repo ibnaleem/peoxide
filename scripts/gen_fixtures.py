@@ -17,7 +17,7 @@ HEADERS_SIZE = 0x400
 E_LFANEW = 0x40
 TEXT_RVA = SECTION_ALIGN
 
-DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_DEBUG = 0, 1, 2, 6
+DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_RELOC, DIR_DEBUG, DIR_DELAY = 0, 1, 2, 5, 6, 13
 CODE = 0x60000020
 DATA = 0x40000040
 AMD64, I386 = 0x8664, 0x14C
@@ -77,15 +77,25 @@ def imports(section, wide, dlls):
     return section.put(descriptors), len(descriptors)
 
 
-def exports(section, dll, functions, named):
-    """Ordinals start at 1. Functions left out of `named` are exported by ordinal only."""
+def delay_imports(section, dll, names):
+    """One 64-bit delay-load descriptor with RVA-based (attributes 1) tables."""
+    hints = [section.put(b"\0\0" + name + b"\0", 2) for name in names]
+    table = b"".join(struct.pack("<Q", rva) for rva in hints + [0])
+    names_table, iat = section.put(table, 8), section.put(table, 8)
+    name = section.put(dll + b"\0", 1)
+    descriptor = struct.pack("<8I", 1, name, 0, iat, names_table, 0, 0, 0) + bytes(32)
+    return section.put(descriptor), len(descriptor)
+
+
+def exports(section, dll, functions, named, base=1):
+    """Ordinals start at `base`. Functions left out of `named` are exported by ordinal only."""
     eat = section.put(b"".join(struct.pack("<I", rva) for rva in functions))
     name_rvas = [section.put(name + b"\0", 1) for name, _ in named]
     names = section.put(b"".join(struct.pack("<I", rva) for rva in name_rvas))
     ordinals = section.put(b"".join(struct.pack("<H", index) for _, index in named))
     dll_name = section.put(dll + b"\0", 1)
     directory = struct.pack(
-        "<2I2H7I", 0, 0, 0, 0, dll_name, 1, len(functions), len(named), eat, names, ordinals
+        "<2I2H7I", 0, 0, 0, 0, dll_name, base, len(functions), len(named), eat, names, ordinals
     )
     return section.put(directory), len(directory)
 
@@ -135,7 +145,9 @@ def resources(section):
     return section.put(tree + data), len(tree) + len(data)
 
 
-def build(machine, wide, characteristics, subsystem, layout):
+def build(machine, wide, characteristics, subsystem, layout, image_base=None):
+    if image_base is None:
+        image_base = 0x180000000 if wide else 0x400000
     sections, directories = [], {}
     raw, rva = HEADERS_SIZE, SECTION_ALIGN
     for name, flags, fill in layout:
@@ -153,12 +165,12 @@ def build(machine, wide, characteristics, subsystem, layout):
     if wide:
         optional = struct.pack(
             "<HBB5IQ2I6H4I2H4Q2I",
-            *[0x20B, 14, 0, *head, 0x180000000, SECTION_ALIGN, FILE_ALIGN, *tail, *reserve],
+            *[0x20B, 14, 0, *head, image_base, SECTION_ALIGN, FILE_ALIGN, *tail, *reserve],
         )
     else:
         optional = struct.pack(
             "<HBB5I4I6H4I2H6I",
-            *[0x10B, 14, 0, *head, sections[1].rva, 0x400000, SECTION_ALIGN, FILE_ALIGN],
+            *[0x10B, 14, 0, *head, sections[1].rva, image_base, SECTION_ALIGN, FILE_ALIGN],
             *[*tail, *reserve],
         )
     optional += b"".join(struct.pack("<2I", *directories.get(i, (0, 0))) for i in range(16))
@@ -199,16 +211,73 @@ def fixtures():
         (b".text", CODE, code),
         (b".rdata", DATA, lambda s: {DIR_IMPORT: imports(s, True, [(b"ntoskrnl.exe", [b"IoCreateDevice"])])}),
     ]
+    # The second export's ordinal, OrdinalBase + 1, needs 33 bits.
+    high_ordinal_base = [
+        (b".text", CODE, code),
+        (
+            b".rdata",
+            DATA,
+            lambda s: {
+                DIR_EXPORT: exports(
+                    s, b"high_ordinal_base.dll", [TEXT_RVA, TEXT_RVA + 4], [(b"Alpha", 0)], 0xFFFFFFFF
+                )
+            },
+        ),
+    ]
     return {
         "sample64.dll": build(AMD64, True, 0x2022, GUI, dll),
+        "high_ordinal_base.dll": build(AMD64, True, 0x2022, GUI, high_ordinal_base),
         "sample32.exe": build(I386, False, 0x0102, CUI, exe),
         "driver.sys": build(AMD64, True, 0x0022, NATIVE, driver),
+        **{f"crafted/{name}": data for name, data in crafted().items()},
+    }
+
+
+def crafted():
+    """Malformed files the parser must get through without panicking. Not compared with pefile."""
+    ntdll = [(b"ntdll.dll", [b"RtlFreeHeap"])]
+
+    def resource_root(root):
+        return [
+            (b".text", CODE, code),
+            (b".rsrc", DATA, lambda s: {DIR_RESOURCE: (s.put(root), len(root))}),
+        ]
+
+    huge_count = resource_root(struct.pack("<2I4H", 0, 0, 0, 0, 0xFFFF, 0xFFFF))
+    self_reference = resource_root(struct.pack("<2I4H2I", 0, 0, 0, 0, 0, 1, RT_VERSION, 0x80000000))
+    reloc_block = struct.pack("<2I2H", TEXT_RVA, 12, 0xA000, 0)
+    long_relocations = [
+        (b".text", CODE, code),
+        (b".reloc", DATA, lambda s: {DIR_RELOC: (s.put(reloc_block), 0x10000000)}),
+    ]
+    import_tables = [
+        (b".text", CODE, code),
+        (
+            b".rdata",
+            DATA,
+            lambda s: {
+                DIR_IMPORT: imports(s, True, ntdll),
+                DIR_DELAY: delay_imports(s, b"user32.dll", [b"MessageBoxW"]),
+            },
+        ),
+    ]
+    return {
+        # The resource root claims 131,070 entries in a 16-byte directory.
+        "huge_count.dll": build(AMD64, True, 0x2022, GUI, huge_count),
+        # The resource root's only entry is the root itself.
+        "self_reference.dll": build(AMD64, True, 0x2022, GUI, self_reference),
+        # Import addresses (ImageBase + RVA) run past 2**64 and past 2**63.
+        "top_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0xFFFFFFFFFFFFF000),
+        "signed_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0x7FFFFFFFFFFFF000),
+        # The base-relocation directory claims 256 MiB in a 2 KiB file.
+        "long_relocations.dll": build(AMD64, True, 0x2022, GUI, long_relocations),
     }
 
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     for name, data in fixtures().items():
+        (OUT / name).parent.mkdir(exist_ok=True)
         (OUT / name).write_bytes(data)
         print(f"wrote {name} ({len(data)} bytes)")
 

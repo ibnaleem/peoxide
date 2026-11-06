@@ -61,7 +61,8 @@ pub struct ImportSymbol {
 
 pub struct ExportSymbol {
     pub name: Option<Vec<u8>>,
-    pub ordinal: u32,
+    /// OrdinalBase + index, which pefile does not wrap at 2**32.
+    pub ordinal: u64,
     /// RVA of the exported code/data, or of the forwarder string.
     pub address: u32,
     pub forwarder: Option<Vec<u8>>,
@@ -148,6 +149,13 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
     Ok(pe)
 }
 
+/// pefile's IAT slot address, ImageBase + IAT RVA + index * thunk size, saturated at u64::MAX.
+fn iat_slot_address(image_base: u64, iat_rva: u64, index: usize, thunk_size: usize) -> u64 {
+    image_base
+        .saturating_add(iat_rva)
+        .saturating_add((index as u64).saturating_mul(thunk_size as u64))
+}
+
 fn imports(pe: &PE, image_base: u64) -> Vec<ImportDll> {
     let Some(import_data) = &pe.import_data else {
         return Vec::new();
@@ -157,14 +165,14 @@ fn imports(pe: &PE, image_base: u64) -> Vec<ImportDll> {
         .import_data
         .iter()
         .map(|entry| {
-            let iat = image_base + entry.import_directory_entry.import_address_table_rva as u64;
+            let iat_rva = entry.import_directory_entry.import_address_table_rva as u64;
             let imports = entry
                 .import_lookup_table
                 .iter()
                 .flatten()
                 .enumerate()
                 .map(|(i, lookup)| {
-                    let address = iat + (i * thunk_size) as u64;
+                    let address = iat_slot_address(image_base, iat_rva, i, thunk_size);
                     match lookup {
                         SyntheticImportLookupTableEntry::OrdinalNumber(ordinal) => ImportSymbol {
                             name: None,
@@ -212,7 +220,7 @@ fn exports(data: &[u8], pe: &PE, file_alignment: u32, opts: &ParseOptions) -> Ve
         };
         (address != 0).then(|| ExportSymbol {
             name,
-            ordinal: base.wrapping_add(index as u32),
+            ordinal: u64::from(base).saturating_add(index as u64),
             address,
             forwarder,
         })
@@ -370,6 +378,21 @@ mod tests {
         assert!(parse(&[]).is_err());
         for len in [2, 64, 0x100, 0x400] {
             assert!(parse(&DLL[..len]).is_err(), "truncated to {len} bytes");
+        }
+    }
+
+    #[test]
+    fn crafted_fixtures_parse_without_panicking() {
+        let crafted: [&[u8]; 5] = [
+            include_bytes!("../../tests/fixtures/crafted/huge_count.dll"),
+            include_bytes!("../../tests/fixtures/crafted/self_reference.dll"),
+            include_bytes!("../../tests/fixtures/crafted/top_image_base.dll"),
+            include_bytes!("../../tests/fixtures/crafted/signed_image_base.dll"),
+            include_bytes!("../../tests/fixtures/crafted/long_relocations.dll"),
+        ];
+        // Ok or Err are both fine; only a panic fails.
+        for data in crafted {
+            let _ = parse(data);
         }
     }
 }
