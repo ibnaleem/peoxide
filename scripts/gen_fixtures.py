@@ -17,7 +17,7 @@ HEADERS_SIZE = 0x400
 E_LFANEW = 0x40
 TEXT_RVA = SECTION_ALIGN
 
-DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_DEBUG = 0, 1, 2, 6
+DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_DEBUG, DIR_DELAY = 0, 1, 2, 6, 13
 CODE = 0x60000020
 DATA = 0x40000040
 AMD64, I386 = 0x8664, 0x14C
@@ -75,6 +75,16 @@ def imports(section, wide, dlls):
         descriptors += struct.pack("<5I", ilt, 0, 0, section.put(dll + b"\0", 1), iat)
     descriptors += bytes(20)
     return section.put(descriptors), len(descriptors)
+
+
+def delay_imports(section, dll, names):
+    """One 64-bit delay-load descriptor with RVA-based (attributes 1) tables."""
+    hints = [section.put(b"\0\0" + name + b"\0", 2) for name in names]
+    table = b"".join(struct.pack("<Q", rva) for rva in hints + [0])
+    names_table, iat = section.put(table, 8), section.put(table, 8)
+    name = section.put(dll + b"\0", 1)
+    descriptor = struct.pack("<8I", 1, name, 0, iat, names_table, 0, 0, 0) + bytes(32)
+    return section.put(descriptor), len(descriptor)
 
 
 def exports(section, dll, functions, named):
@@ -135,7 +145,7 @@ def resources(section):
     return section.put(tree + data), len(tree) + len(data)
 
 
-def build(machine, wide, characteristics, subsystem, layout):
+def build(machine, wide, characteristics, subsystem, layout, image_base=0x180000000):
     sections, directories = [], {}
     raw, rva = HEADERS_SIZE, SECTION_ALIGN
     for name, flags, fill in layout:
@@ -153,7 +163,7 @@ def build(machine, wide, characteristics, subsystem, layout):
     if wide:
         optional = struct.pack(
             "<HBB5IQ2I6H4I2H4Q2I",
-            *[0x20B, 14, 0, *head, 0x180000000, SECTION_ALIGN, FILE_ALIGN, *tail, *reserve],
+            *[0x20B, 14, 0, *head, image_base, SECTION_ALIGN, FILE_ALIGN, *tail, *reserve],
         )
     else:
         optional = struct.pack(
@@ -203,12 +213,49 @@ def fixtures():
         "sample64.dll": build(AMD64, True, 0x2022, GUI, dll),
         "sample32.exe": build(I386, False, 0x0102, CUI, exe),
         "driver.sys": build(AMD64, True, 0x0022, NATIVE, driver),
+        **{f"crafted/{name}": data for name, data in crafted().items()},
+    }
+
+
+def crafted():
+    """Malformed files the parser must get through without panicking. Not compared with pefile."""
+    ntdll = [(b"ntdll.dll", [b"RtlFreeHeap"])]
+    huge_root = struct.pack("<2I4H", 0, 0, 0, 0, 0xFFFF, 0xFFFF)
+    huge_count = [
+        (b".text", CODE, code),
+        (b".rsrc", DATA, lambda s: {DIR_RESOURCE: (s.put(huge_root), len(huge_root))}),
+    ]
+    root_to_itself = struct.pack("<2I4H2I", 0, 0, 0, 0, 0, 1, RT_VERSION, 0x80000000)
+    self_reference = [
+        (b".text", CODE, code),
+        (b".rsrc", DATA, lambda s: {DIR_RESOURCE: (s.put(root_to_itself), len(root_to_itself))}),
+    ]
+    image_base = [
+        (b".text", CODE, code),
+        (
+            b".rdata",
+            DATA,
+            lambda s: {
+                DIR_IMPORT: imports(s, True, ntdll),
+                DIR_DELAY: delay_imports(s, b"user32.dll", [b"MessageBoxW"]),
+            },
+        ),
+    ]
+    return {
+        # The resource root claims 131,070 entries in a 16-byte directory.
+        "huge_count.dll": build(AMD64, True, 0x2022, GUI, huge_count),
+        # The resource root's only entry is the root itself.
+        "self_reference.dll": build(AMD64, True, 0x2022, GUI, self_reference),
+        # Import addresses (ImageBase + RVA) run past 2**64 and past 2**63.
+        "top_image_base.dll": build(AMD64, True, 0x2022, GUI, image_base, 0xFFFFFFFFFFFFF000),
+        "signed_image_base.dll": build(AMD64, True, 0x2022, GUI, image_base, 0x7FFFFFFFFFFFF000),
     }
 
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     for name, data in fixtures().items():
+        (OUT / name).parent.mkdir(exist_ok=True)
         (OUT / name).write_bytes(data)
         print(f"wrote {name} ({len(data)} bytes)")
 

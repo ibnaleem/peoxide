@@ -18,7 +18,7 @@ SYSTEM = [
     WINDIR / "SysWOW64" / "kernel32.dll",
 ]
 SYSTEM = [p for p in SYSTEM if p.exists()]
-CORPUS = SYSTEM + sorted((Path(__file__).parent / "fixtures").iterdir())
+CORPUS = SYSTEM + sorted(p for p in (Path(__file__).parent / "fixtures").iterdir() if p.is_file())
 
 DOS_FIELDS = [
     "e_magic",

@@ -12,6 +12,7 @@ def test_fixtures_match_the_generator():
     generator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(generator)
     expected = generator.fixtures()
-    assert sorted(p.name for p in FIXTURES.iterdir()) == sorted(expected)
+    files = (p.relative_to(FIXTURES).as_posix() for p in FIXTURES.rglob("*") if p.is_file())
+    assert sorted(files) == sorted(expected)
     for name, data in expected.items():
         assert (FIXTURES / name).read_bytes() == data, f"rerun scripts/gen_fixtures.py ({name})"
