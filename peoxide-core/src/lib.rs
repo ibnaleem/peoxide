@@ -149,6 +149,13 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
     Ok(pe)
 }
 
+/// pefile's IAT slot address, ImageBase + IAT RVA + index * thunk size, saturated at u64::MAX.
+fn iat_slot_address(image_base: u64, iat_rva: u64, index: usize, thunk_size: usize) -> u64 {
+    image_base
+        .saturating_add(iat_rva)
+        .saturating_add((index as u64).saturating_mul(thunk_size as u64))
+}
+
 fn imports(pe: &PE, image_base: u64) -> Vec<ImportDll> {
     let Some(import_data) = &pe.import_data else {
         return Vec::new();
@@ -159,14 +166,13 @@ fn imports(pe: &PE, image_base: u64) -> Vec<ImportDll> {
         .iter()
         .map(|entry| {
             let iat_rva = entry.import_directory_entry.import_address_table_rva as u64;
-            let iat = image_base.saturating_add(iat_rva);
             let imports = entry
                 .import_lookup_table
                 .iter()
                 .flatten()
                 .enumerate()
                 .map(|(i, lookup)| {
-                    let address = iat.saturating_add((i * thunk_size) as u64);
+                    let address = iat_slot_address(image_base, iat_rva, i, thunk_size);
                     match lookup {
                         SyntheticImportLookupTableEntry::OrdinalNumber(ordinal) => ImportSymbol {
                             name: None,

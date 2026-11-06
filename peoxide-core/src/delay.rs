@@ -139,10 +139,14 @@ impl Pe {
         let table = entries(descriptor.int).or_else(|| entries(descriptor.iat))?;
         let address_mask = self.ordinal_flag() - 1;
         let image_base = self.headers.optional_header.image_base;
-        let iat_va = image_base.saturating_add(descriptor.iat as u64);
         let mut symbols = Vec::new();
         for (index, value) in table.into_iter().enumerate() {
-            let address = iat_va.saturating_add((index * self.thunk_size()) as u64);
+            let address = crate::iat_slot_address(
+                image_base,
+                descriptor.iat as u64,
+                index,
+                self.thunk_size(),
+            );
             if value & self.ordinal_flag() != 0 {
                 let ordinal = (value & 0xFFFF) as u16;
                 if ordinal != 0 {
