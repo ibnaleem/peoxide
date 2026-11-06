@@ -78,15 +78,17 @@ def test_extreme_addresses_never_panic(value):
         pass
 
 
-@needs_kernel32
+FIXTURES = [p.read_bytes() for p in sorted((Path(__file__).parent / "fixtures").iterdir())]
+
+
 def test_random_corruption_never_crashes():
-    original = KERNEL32.read_bytes()
     rng = random.Random(0)
     for _ in range(2000):
-        data = bytearray(original)
+        data = bytearray(rng.choice(FIXTURES))
         hot = rng.random() < 0.7
         for _ in range(rng.randint(1, 16)):
-            pos = rng.randrange(0x1000 if hot else len(data))
+            # The hot region holds the headers and the section table.
+            pos = rng.randrange(0x400 if hot else len(data))
             data[pos] = rng.randrange(256)
         try:
             peoxide.PE(data=bytes(data))
