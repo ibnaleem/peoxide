@@ -69,7 +69,7 @@ impl Pe {
     /// pefile's `normalize_import_va`: turn an in-image VA into an RVA, leave anything else.
     fn normalize_va(&self, va: i64) -> i64 {
         let base = self.headers.optional_header.image_base as i64;
-        let end = base + self.headers.optional_header.size_of_image as i64;
+        let end = base.saturating_add(self.headers.optional_header.size_of_image as i64);
         if (base..end).contains(&va) {
             va - base
         } else {
@@ -136,10 +136,11 @@ impl Pe {
         };
         let table = entries(descriptor.int).or_else(|| entries(descriptor.iat))?;
         let address_mask = self.ordinal_flag() - 1;
-        let iat_va = descriptor.iat + self.headers.optional_header.image_base as i64;
+        let image_base = self.headers.optional_header.image_base;
+        let iat_va = image_base.saturating_add(descriptor.iat as u64);
         let mut symbols = Vec::new();
         for (index, value) in table.into_iter().enumerate() {
-            let address = (iat_va + (index * self.thunk_size()) as i64) as u64;
+            let address = iat_va.saturating_add((index * self.thunk_size()) as u64);
             if value & self.ordinal_flag() != 0 {
                 let ordinal = (value & 0xFFFF) as u16;
                 if ordinal != 0 {
@@ -154,7 +155,7 @@ impl Pe {
             }
             let hint_rva = (value & address_mask) as i64;
             let hint = self.uint_at(data, hint_rva, 2)? as u16;
-            let name = self.c_string_at(data, value as i64 + 2);
+            let name = self.c_string_at(data, (value as i64).saturating_add(2));
             if !name.is_empty() && is_valid_function_name(&name) {
                 symbols.push(ImportSymbol {
                     name: Some(name),

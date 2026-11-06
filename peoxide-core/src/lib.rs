@@ -157,14 +157,15 @@ fn imports(pe: &PE, image_base: u64) -> Vec<ImportDll> {
         .import_data
         .iter()
         .map(|entry| {
-            let iat = image_base + entry.import_directory_entry.import_address_table_rva as u64;
+            let iat_rva = entry.import_directory_entry.import_address_table_rva as u64;
+            let iat = image_base.saturating_add(iat_rva);
             let imports = entry
                 .import_lookup_table
                 .iter()
                 .flatten()
                 .enumerate()
                 .map(|(i, lookup)| {
-                    let address = iat + (i * thunk_size) as u64;
+                    let address = iat.saturating_add((i * thunk_size) as u64);
                     match lookup {
                         SyntheticImportLookupTableEntry::OrdinalNumber(ordinal) => ImportSymbol {
                             name: None,
