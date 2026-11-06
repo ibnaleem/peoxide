@@ -78,13 +78,13 @@ def test_extreme_addresses_never_panic(value):
         pass
 
 
-FIXTURES = [p.read_bytes() for p in sorted((Path(__file__).parent / "fixtures").iterdir())]
+FIXTURE_BYTES = [p.read_bytes() for p in sorted((Path(__file__).parent / "fixtures").iterdir())]
 
 
 def test_random_corruption_never_crashes():
     rng = random.Random(0)
     for _ in range(2000):
-        data = bytearray(rng.choice(FIXTURES))
+        data = bytearray(rng.choice(FIXTURE_BYTES))
         hot = rng.random() < 0.7
         for _ in range(rng.randint(1, 16)):
             # The hot region holds the headers and the section table.
