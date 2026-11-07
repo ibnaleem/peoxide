@@ -168,6 +168,17 @@ def test_unknown_attribute_raises(pair):
         ours.FILE_HEADER.IMAGE_FILE_NOT_A_FLAG
 
 
+def test_field_reads_return_the_stored_object(pair):
+    # `is`, not `==`: a field stored as a Rust integer builds a new int on every read, which
+    # makes attribute access several times slower than pefile's.
+    ours, _ = pair
+    reads = [(ours.OPTIONAL_HEADER, "ImageBase")]
+    reads += [(section, "VirtualAddress") for section in ours.sections]
+    reads += [(symbol, "address") for symbol in ours.DIRECTORY_ENTRY_EXPORT.symbols]
+    reads += [(i, "address") for dll in ours.DIRECTORY_ENTRY_IMPORT for i in dll.imports]
+    assert all(getattr(obj, name) is getattr(obj, name) for obj, name in reads)
+
+
 def test_sections(pair):
     ours, theirs = pair
     assert len(ours.sections) == len(theirs.sections)
