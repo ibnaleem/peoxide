@@ -1,5 +1,7 @@
 #![allow(non_snake_case)] // Python attribute names follow pefile (e_lfanew, NumberOfSections, ...)
 
+use pyo3::IntoPyObjectExt;
+use pyo3::PyClass;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyAttributeError, PyException, PyTypeError};
 use pyo3::prelude::*;
@@ -15,21 +17,25 @@ create_exception!(
 
 /// Defines a frozen, read-only Python class plus `new(py, core)`, which builds every field
 /// from the given expression. The caller names the `py` and core bindings the expressions use.
+///
+/// Fields hold finished Python objects, so PyO3 exposes them as struct members, which CPython
+/// reads without calling into Rust or allocating. A `u32` field would build a new `int` on
+/// every read.
 macro_rules! py_class {
     (
         $(#[$meta:meta])*
-        $name:ident from $core:ty as ($py:ident, $c:ident) {
+        $name:ident $([$($option:ident),*])? from $core:ty as ($py:ident, $c:ident) {
             $($field:ident: $ty:ty = $value:expr),* $(,)?
         }
     ) => {
         $(#[$meta])*
-        #[pyclass(frozen, get_all, module = "peoxide")]
-        struct $name { $($field: $ty),* }
+        #[pyclass(frozen, get_all, module = "peoxide" $($(, $option)*)?)]
+        struct $name { $($field: Py<PyAny>),* }
 
         impl $name {
             #[allow(unused_variables)]
             fn new($py: Python<'_>, $c: &$core) -> PyResult<Self> {
-                Ok(Self { $($field: $value),* })
+                Ok(Self { $($field: { let value: $ty = $value; value.into_py_any($py)? }),* })
             }
         }
     };
@@ -88,7 +94,7 @@ py_class!(NtHeaders from peoxide_core::Headers as (py, c) {
     Signature: u32 = c.signature,
 });
 
-py_class!(FileHeader from peoxide_core::FileHeader as (py, c) {
+py_class!(FileHeader [dict] from peoxide_core::FileHeader as (py, c) {
     Machine: u16 = c.machine,
     NumberOfSections: u16 = c.number_of_sections,
     TimeDateStamp: u32 = c.time_date_stamp,
@@ -123,7 +129,7 @@ py_class!(DataDirectory from (usize, peoxide_core::DataDirectory) as (py, c) {
     Size: u32 = c.1.size,
 });
 
-py_class!(OptionalHeader from peoxide_core::OptionalHeader as (py, c) {
+py_class!(OptionalHeader [dict] from peoxide_core::OptionalHeader as (py, c) {
     Magic: u16 = c.magic,
     MajorLinkerVersion: u8 = c.major_linker_version,
     MinorLinkerVersion: u8 = c.minor_linker_version,
@@ -161,28 +167,29 @@ py_class!(OptionalHeader from peoxide_core::OptionalHeader as (py, c) {
     )?,
 });
 
-#[pyclass(frozen, module = "peoxide")]
+/// Exposed fields are Python objects for the reason given on `py_class!`.
+#[pyclass(frozen, dict, module = "peoxide")]
 struct Section {
     #[pyo3(get)]
     Name: Py<PyBytes>,
     #[pyo3(get)]
-    Misc_VirtualSize: u32,
+    Misc_VirtualSize: Py<PyAny>,
     #[pyo3(get)]
-    VirtualAddress: u32,
+    VirtualAddress: Py<PyAny>,
     #[pyo3(get)]
-    SizeOfRawData: u32,
+    SizeOfRawData: Py<PyAny>,
     #[pyo3(get)]
-    PointerToRawData: u32,
+    PointerToRawData: Py<PyAny>,
     #[pyo3(get)]
-    PointerToRelocations: u32,
+    PointerToRelocations: Py<PyAny>,
     #[pyo3(get)]
-    PointerToLinenumbers: u32,
+    PointerToLinenumbers: Py<PyAny>,
     #[pyo3(get)]
-    NumberOfRelocations: u16,
+    NumberOfRelocations: Py<PyAny>,
     #[pyo3(get)]
-    NumberOfLinenumbers: u16,
+    NumberOfLinenumbers: Py<PyAny>,
     #[pyo3(get)]
-    Characteristics: u32,
+    Characteristics: Py<PyAny>,
     table: peoxide_core::Section,
     layout: peoxide_core::SectionLayout,
     /// The whole file, shared with `PE` and every other section.
@@ -195,22 +202,22 @@ impl Section {
         table: &peoxide_core::Section,
         layout: peoxide_core::SectionLayout,
         file: &Bound<'_, PyBytes>,
-    ) -> Self {
-        Section {
+    ) -> PyResult<Self> {
+        Ok(Section {
             Name: bytes(py, &table.name),
-            Misc_VirtualSize: table.virtual_size,
-            VirtualAddress: table.virtual_address,
-            SizeOfRawData: table.size_of_raw_data,
-            PointerToRawData: table.pointer_to_raw_data,
-            PointerToRelocations: table.pointer_to_relocations,
-            PointerToLinenumbers: table.pointer_to_linenumbers,
-            NumberOfRelocations: table.number_of_relocations,
-            NumberOfLinenumbers: table.number_of_linenumbers,
-            Characteristics: table.characteristics,
+            Misc_VirtualSize: table.virtual_size.into_py_any(py)?,
+            VirtualAddress: table.virtual_address.into_py_any(py)?,
+            SizeOfRawData: table.size_of_raw_data.into_py_any(py)?,
+            PointerToRawData: table.pointer_to_raw_data.into_py_any(py)?,
+            PointerToRelocations: table.pointer_to_relocations.into_py_any(py)?,
+            PointerToLinenumbers: table.pointer_to_linenumbers.into_py_any(py)?,
+            NumberOfRelocations: table.number_of_relocations.into_py_any(py)?,
+            NumberOfLinenumbers: table.number_of_linenumbers.into_py_any(py)?,
+            Characteristics: table.characteristics.into_py_any(py)?,
             table: table.clone(),
             layout,
             file: file.clone().unbind(),
-        }
+        })
     }
 
     fn data<'a>(
@@ -292,7 +299,7 @@ struct CvInfoPdb20 {
     PdbFileName: Option<Py<PyBytes>>,
 }
 
-#[pyclass(frozen, get_all, module = "peoxide")]
+#[pyclass(frozen, dict, get_all, module = "peoxide")]
 struct ExDllCharacteristics {
     ExDllCharacteristics: u32,
 }
@@ -345,11 +352,13 @@ fn debug_entry(py: Python<'_>, entry: &peoxide_core::DebugEntry) -> PyResult<Py<
             },
         )?
         .into_any(),
-        E::ExDllCharacteristics(value) => Py::new(
+        E::ExDllCharacteristics(value) => with_flags(
             py,
             ExDllCharacteristics {
                 ExDllCharacteristics: *value,
             },
+            EX_DLL_CHARACTERISTICS_FLAGS,
+            *value,
         )?
         .into_any(),
     })
@@ -651,14 +660,20 @@ const SECTION_FLAGS: Flags = &[
     ("IMAGE_SCN_MEM_WRITE", 0x80000000),
 ];
 
-fn flag(flags: Flags, field: u32, class: &str, name: &str) -> PyResult<bool> {
-    flags
-        .iter()
-        .find(|(flag, _)| *flag == name)
-        .map(|(_, mask)| field & mask != 0)
-        .ok_or_else(|| {
-            PyAttributeError::new_err(format!("'{class}' object has no attribute '{name}'"))
-        })
+/// Creates `value` with each flag set as a plain attribute, as pefile does, so that reading
+/// a flag is a dict lookup rather than a failed lookup followed by `__getattr__`. A class with
+/// `__getattr__` also stops CPython from specialising reads of its other attributes.
+fn with_flags<T: PyClass>(
+    py: Python<'_>,
+    value: impl Into<PyClassInitializer<T>>,
+    flags: Flags,
+    field: u32,
+) -> PyResult<Py<T>> {
+    let object = Bound::new(py, value)?;
+    for &(name, mask) in flags {
+        object.as_any().setattr(name, field & mask != 0)?;
+    }
+    Ok(object.unbind())
 }
 
 const EX_DLL_CHARACTERISTICS_FLAGS: Flags = &[
@@ -676,39 +691,6 @@ const EX_DLL_CHARACTERISTICS_FLAGS: Flags = &[
     ("IMAGE_DLLCHARACTERISTICS_EX_CET_RESERVED_2", 0x0020),
 ];
 
-#[pymethods]
-impl ExDllCharacteristics {
-    fn __getattr__(&self, name: &str) -> PyResult<bool> {
-        let field = self.ExDllCharacteristics;
-        flag(
-            EX_DLL_CHARACTERISTICS_FLAGS,
-            field,
-            "ExDllCharacteristics",
-            name,
-        )
-    }
-}
-
-#[pymethods]
-impl FileHeader {
-    fn __getattr__(&self, name: &str) -> PyResult<bool> {
-        flag(
-            IMAGE_FILE_FLAGS,
-            self.Characteristics.into(),
-            "FileHeader",
-            name,
-        )
-    }
-}
-
-#[pymethods]
-impl OptionalHeader {
-    fn __getattr__(&self, name: &str) -> PyResult<bool> {
-        let field = self.DllCharacteristics.into();
-        flag(DLL_CHARACTERISTICS_FLAGS, field, "OptionalHeader", name)
-    }
-}
-
 fn hexdigest(py: Python<'_>, algorithm: &str, data: &[u8]) -> PyResult<String> {
     py.import("hashlib")?
         .call_method1("new", (algorithm, PyBytes::new(py, data)))?
@@ -718,10 +700,6 @@ fn hexdigest(py: Python<'_>, algorithm: &str, data: &[u8]) -> PyResult<String> {
 
 #[pymethods]
 impl Section {
-    fn __getattr__(&self, name: &str) -> PyResult<bool> {
-        flag(SECTION_FLAGS, self.Characteristics, "Section", name)
-    }
-
     /// The section's bytes, or a slice of them starting at RVA `start`.
     #[pyo3(signature = (start=None, length=None, ignore_padding=false))]
     fn get_data<'py>(
@@ -1013,14 +991,28 @@ impl PE {
         Ok(PE {
             DOS_HEADER: Py::new(py, DosHeader::new(py, &h.dos_header)?)?,
             NT_HEADERS: Py::new(py, NtHeaders::new(py, h)?)?,
-            FILE_HEADER: Py::new(py, FileHeader::new(py, &h.file_header)?)?,
-            OPTIONAL_HEADER: Py::new(py, OptionalHeader::new(py, &h.optional_header)?)?,
+            FILE_HEADER: with_flags(
+                py,
+                FileHeader::new(py, &h.file_header)?,
+                IMAGE_FILE_FLAGS,
+                h.file_header.characteristics.into(),
+            )?,
+            OPTIONAL_HEADER: with_flags(
+                py,
+                OptionalHeader::new(py, &h.optional_header)?,
+                DLL_CHARACTERISTICS_FLAGS,
+                h.optional_header.dll_characteristics.into(),
+            )?,
             sections: PyList::new(
                 py,
                 pe.sections
                     .iter()
                     .zip(&pe.layouts)
-                    .map(|(table, layout)| Section::new(py, table, *layout, &data)),
+                    .map(|(table, layout)| {
+                        let section = Section::new(py, table, *layout, &data)?;
+                        with_flags(py, section, SECTION_FLAGS, table.characteristics)
+                    })
+                    .collect::<PyResult<Vec<_>>>()?,
             )?
             .unbind(),
             DIRECTORY_ENTRY_IMPORT: list(py, &pe.imports, ImportDescData::new)?,
