@@ -1,6 +1,7 @@
 """Every way of handing a file to `PE()` gives the same result."""
 
 import mmap
+import struct
 import threading
 from pathlib import Path
 
@@ -62,3 +63,38 @@ def test_parsing_on_many_threads_gives_the_same_result():
     for thread in threads:
         thread.join()
     assert results == [expected] * 400
+
+
+def test_first_reads_of_a_directory_on_many_threads_give_one_object():
+    pe = peoxide.PE(data=DATA)
+    start = threading.Barrier(8)
+    seen = []
+
+    def work():
+        start.wait()
+        seen.append((pe.DIRECTORY_ENTRY_IMPORT, pe.DIRECTORY_ENTRY_EXPORT, pe.DIRECTORY_ENTRY_BASERELOC))
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert all(a is b for objects in seen for a, b in zip(objects, seen[0]))
+
+
+EXCEPTION, BASERELOC, DEBUG, LOAD_CONFIG = 3, 5, 6, 10
+
+
+@pytest.mark.parametrize("directory", [EXCEPTION, BASERELOC, DEBUG, LOAD_CONFIG])
+def test_a_directory_that_points_outside_the_file_does_not_reject_it(directory):
+    """pefile reads such a file and reports that directory as empty; so does peoxide."""
+    data = bytearray(DATA)
+    optional_header = struct.unpack_from("<I", data, 0x3C)[0] + 24
+    data_directories = optional_header + 112  # PE32+
+    struct.pack_into("<II", data, data_directories + 8 * directory, 0x7FFFFF00, 0x1C)
+
+    pe = peoxide.PE(data=bytes(data))
+
+    assert fingerprint(pe) == fingerprint(peoxide.PE(data=DATA))
+    assert pe.DIRECTORY_ENTRY_DEBUG == [] or directory != DEBUG
+    assert pe.DIRECTORY_ENTRY_BASERELOC == [] or directory != BASERELOC
