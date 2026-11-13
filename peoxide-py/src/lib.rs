@@ -995,13 +995,18 @@ struct PE {
 #[pymethods]
 impl PE {
     /// Parse a PE file from a path (`name`) or from in-memory bytes (`data`).
+    ///
+    /// `fast_load` is accepted so pefile code runs unchanged, and ignored: nothing is gained by
+    /// skipping directories that are parsed this quickly or built only when first read.
     #[new]
-    #[pyo3(signature = (name=None, data=None))]
+    #[pyo3(signature = (name=None, data=None, fast_load=None))]
     fn new(
         py: Python<'_>,
         name: Option<std::path::PathBuf>,
         data: Option<Bound<'_, PyAny>>,
+        fast_load: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let _ = fast_load;
         let data = match (name, data) {
             (Some(path), None) => read_file(py, &path)?,
             (None, Some(data)) => immutable_bytes(data)?,
@@ -1227,6 +1232,108 @@ impl PE {
         missing(&self.version.file_info, py, "FileInfo")
     }
 
+    /// Does nothing: the directories are already parsed. Here for pefile code that loads
+    /// with `fast_load=True` and then asks for the directories it wants.
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn parse_data_directories(
+        &self,
+        _args: &Bound<'_, PyTuple>,
+        _kwargs: Option<&Bound<'_, PyDict>>,
+    ) {
+    }
+
+    /// Does nothing, for the same reason as `parse_data_directories`.
+    fn full_load(&self) {}
+
+    /// Does nothing: no file handle or mapping is kept open. Here for pefile code that closes
+    /// its PE objects, directly or through `with`.
+    fn close(&self) {}
+
+    fn __enter__(slf: Py<Self>) -> Py<Self> {
+        slf
+    }
+
+    #[pyo3(signature = (*_args))]
+    fn __exit__(&self, _args: &Bound<'_, PyTuple>) {}
+
+    /// The whole file, as `bytes`.
+    #[getter]
+    fn __data__(&self, py: Python<'_>) -> Py<PyBytes> {
+        self.data.clone_ref(py)
+    }
+
+    /// The little-endian 16-bit value at an RVA, or `None` when it can't be read.
+    fn get_word_at_rva(&self, py: Python<'_>, rva: i64) -> PyResult<Option<u64>> {
+        self.uint_at_rva(py, rva, 2)
+    }
+
+    /// The little-endian 32-bit value at an RVA, or `None` when it can't be read.
+    fn get_dword_at_rva(&self, py: Python<'_>, rva: i64) -> PyResult<Option<u64>> {
+        self.uint_at_rva(py, rva, 4)
+    }
+
+    /// The little-endian 64-bit value at an RVA, or `None` when it can't be read.
+    fn get_qword_at_rva(&self, py: Python<'_>, rva: i64) -> PyResult<Option<u64>> {
+        self.uint_at_rva(py, rva, 8)
+    }
+
+    /// The little-endian 16-bit value at a file offset, or `None` past the end of the file.
+    fn get_word_from_offset(&self, py: Python<'_>, offset: i64) -> Option<u64> {
+        self.uint_at_offset(py, offset, 2)
+    }
+
+    /// The little-endian 32-bit value at a file offset, or `None` past the end of the file.
+    fn get_dword_from_offset(&self, py: Python<'_>, offset: i64) -> Option<u64> {
+        self.uint_at_offset(py, offset, 4)
+    }
+
+    /// The little-endian 64-bit value at a file offset, or `None` past the end of the file.
+    fn get_qword_from_offset(&self, py: Python<'_>, offset: i64) -> Option<u64> {
+        self.uint_at_offset(py, offset, 8)
+    }
+
+    /// The bytes at an RVA up to the first NUL, reading at most `max_length` bytes. An RVA
+    /// outside every section is read as a file offset, as pefile does.
+    #[pyo3(signature = (rva, max_length=MAX_STRING_LENGTH))]
+    fn get_string_at_rva<'py>(
+        &self,
+        py: Python<'py>,
+        rva: Option<i64>,
+        max_length: i64,
+    ) -> PyResult<Option<Bound<'py, PyBytes>>> {
+        let Some(rva) = rva else {
+            return Ok(None);
+        };
+        let file = self.data.as_bytes(py);
+        let string = no_panic(|| {
+            let range = match self.pe.section_by_rva(rva) {
+                Some(i) => self.pe.layouts[i].data_range(
+                    &self.pe.sections[i],
+                    Some(rva),
+                    Some(max_length),
+                    false,
+                ),
+                None => (rva, rva.saturating_add(max_length)),
+            };
+            let bytes = &file[peoxide_core::clamp(range, file.len())];
+            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            &bytes[..end]
+        })?;
+        Ok(Some(PyBytes::new(py, string)))
+    }
+
+    /// The checksum Windows expects in `OPTIONAL_HEADER.CheckSum` for this file.
+    fn generate_checksum(&self, py: Python<'_>) -> PyResult<u64> {
+        let file = self.data.as_bytes(py);
+        no_panic(|| py.detach(|| self.pe.checksum(file)))
+    }
+
+    /// True when `OPTIONAL_HEADER.CheckSum` holds the checksum of this file.
+    fn verify_checksum(&self, py: Python<'_>) -> PyResult<bool> {
+        let stored = u64::from(self.pe.headers.optional_header.checksum);
+        Ok(self.generate_checksum(py)? == stored)
+    }
+
     /// True for a standard executable: not a DLL, not a driver, and marked executable.
     fn is_exe(&self) -> PyResult<bool> {
         no_panic(|| self.pe.is_exe())
@@ -1241,6 +1348,37 @@ impl PE {
     fn is_driver(&self) -> PyResult<bool> {
         no_panic(|| self.pe.is_driver())
     }
+}
+
+/// pefile's `MAX_STRING_LENGTH`.
+const MAX_STRING_LENGTH: i64 = 0x100000;
+
+impl PE {
+    fn uint_at_rva(&self, py: Python<'_>, rva: i64, size: usize) -> PyResult<Option<u64>> {
+        let file = self.data.as_bytes(py);
+        let range = no_panic(|| self.pe.data_range(rva, Some(size as i64)))?;
+        Ok(range.and_then(|range| little_endian(&file[range], size)))
+    }
+
+    /// `None` for a negative offset too. pefile would count that from the end of the file.
+    fn uint_at_offset(&self, py: Python<'_>, offset: i64, size: usize) -> Option<u64> {
+        let start = usize::try_from(offset).ok()?;
+        let bytes = self
+            .data
+            .as_bytes(py)
+            .get(start..start.checked_add(size)?)?;
+        little_endian(bytes, size)
+    }
+}
+
+/// `bytes` as a little-endian integer, or `None` when fewer than `size` bytes could be read.
+fn little_endian(bytes: &[u8], size: usize) -> Option<u64> {
+    (bytes.len() == size).then(|| {
+        bytes
+            .iter()
+            .rev()
+            .fold(0, |value, &byte| (value << 8) | u64::from(byte))
+    })
 }
 
 #[pymodule]
