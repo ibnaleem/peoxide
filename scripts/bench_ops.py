@@ -12,10 +12,15 @@ on its own, so a change can be tied to the operation it affects:
   working set per PE object, which also counts memory allocated in Rust (Windows only).
 - throughput: files and megabytes per second over a folder, on one thread and on several.
 
-pefile is limited to the directories peoxide parses, as in `benchmark.py`. Every operation
-returns a value, and the two libraries' values must be equal before anything is timed, so a
-library cannot look fast by skipping the work. The libraries take turns inside each repeat,
-garbage collection is off while timing, and the reported time is the median repeat.
+pefile is limited to the directories peoxide parses, as in `benchmark.py`. Each operation on a
+built PE object returns a value, and the two libraries' values must be equal before it is
+timed, so a library cannot look fast by skipping the work. The init and throughput rows build
+objects without reading them back, so they do not charge for anything a library builds only on
+first use. The "init and walk imports" row does, for imports, and `benchmark.py` does for
+everything. The libraries take turns inside each repeat, garbage collection is off while
+timing, and the reported time is the median repeat.
+
+The default files and folder are Windows system paths. Pass your own on another system.
 
 `--baseline` adds a column comparing peoxide with an earlier `--json` run of this script.
 """
@@ -58,11 +63,7 @@ def pefile_scoped(**source):
     return pe
 
 
-def peoxide_scoped(**source):
-    return peoxide.PE(**source)
-
-
-LIBRARIES = {"peoxide": peoxide_scoped, "pefile": pefile_scoped}
+LIBRARIES = {"peoxide": peoxide.PE, "pefile": pefile_scoped}
 
 
 def export_symbols(pe):
@@ -138,10 +139,12 @@ def working_set():
 
     counters = Counters()
     counters.cb = ctypes.sizeof(counters)
-    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     kernel32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
-    kernel32.K32GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb)
+    process = kernel32.GetCurrentProcess()
+    if not kernel32.K32GetProcessMemoryInfo(process, ctypes.byref(counters), counters.cb):
+        raise ctypes.WinError(ctypes.get_last_error())
     return counters.WorkingSetSize
 
 
@@ -250,10 +253,10 @@ def report(results, baseline):
                 row += f" {ours['median'] / old['peoxide']['median'] - 1:+.0%} |" if old else " |"
             print(row)
         for name, memory in result["memory"].items():
-            held = memory["working set"]
+            working_set = memory["working set"]
             print(
                 f"\n{name}: {memory['python heap'] / 1024:.0f} KiB Python heap per object"
-                + (f", {held / 1024:.0f} KiB working set per object" if held is not None else "")
+                + (f", {working_set / 1024:.0f} KiB working set per object" if working_set else "")
             )
     throughput = results["throughput"]
     print(f"\n### Throughput: {throughput['files']} DLLs, {throughput['megabytes']:.0f} MB\n")
