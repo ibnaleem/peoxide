@@ -4,7 +4,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::PyClass;
 use pyo3::buffer::PyBuffer;
 use pyo3::create_exception;
-use pyo3::exceptions::{PyAttributeError, PyException, PyOSError, PyTypeError};
+use pyo3::exceptions::{PyAttributeError, PyException, PyOSError, PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
@@ -1234,12 +1234,14 @@ impl PE {
 
     /// Does nothing: the directories are already parsed. Here for pefile code that loads
     /// with `fast_load=True` and then asks for the directories it wants.
-    #[pyo3(signature = (*_args, **_kwargs))]
+    #[pyo3(signature = (directories=None, forwarded_exports_only=None, import_dllnames_only=None))]
     fn parse_data_directories(
         &self,
-        _args: &Bound<'_, PyTuple>,
-        _kwargs: Option<&Bound<'_, PyDict>>,
+        directories: Option<&Bound<'_, PyAny>>,
+        forwarded_exports_only: Option<&Bound<'_, PyAny>>,
+        import_dllnames_only: Option<&Bound<'_, PyAny>>,
     ) {
+        let _ = (directories, forwarded_exports_only, import_dllnames_only);
     }
 
     /// Does nothing, for the same reason as `parse_data_directories`.
@@ -1262,48 +1264,57 @@ impl PE {
         self.data.clone_ref(py)
     }
 
-    /// The little-endian 16-bit value at an RVA, or `None` when it can't be read.
-    fn get_word_at_rva(&self, py: Python<'_>, rva: i64) -> PyResult<Option<u64>> {
-        self.uint_at_rva(py, rva, 2)
+    /// The little-endian 16-bit value at an RVA, or `None` when it can't be read
+    /// or the RVA is negative.
+    fn get_word_at_rva(&self, rva: &Bound<'_, PyAny>) -> PyResult<Option<u64>> {
+        self.uint_at_rva(rva, 2)
     }
 
-    /// The little-endian 32-bit value at an RVA, or `None` when it can't be read.
-    fn get_dword_at_rva(&self, py: Python<'_>, rva: i64) -> PyResult<Option<u64>> {
-        self.uint_at_rva(py, rva, 4)
+    /// The little-endian 32-bit value at an RVA, or `None` when it can't be read
+    /// or the RVA is negative.
+    fn get_dword_at_rva(&self, rva: &Bound<'_, PyAny>) -> PyResult<Option<u64>> {
+        self.uint_at_rva(rva, 4)
     }
 
-    /// The little-endian 64-bit value at an RVA, or `None` when it can't be read.
-    fn get_qword_at_rva(&self, py: Python<'_>, rva: i64) -> PyResult<Option<u64>> {
-        self.uint_at_rva(py, rva, 8)
+    /// The little-endian 64-bit value at an RVA, or `None` when it can't be read
+    /// or the RVA is negative.
+    fn get_qword_at_rva(&self, rva: &Bound<'_, PyAny>) -> PyResult<Option<u64>> {
+        self.uint_at_rva(rva, 8)
     }
 
-    /// The little-endian 16-bit value at a file offset, or `None` past the end of the file.
-    fn get_word_from_offset(&self, py: Python<'_>, offset: i64) -> Option<u64> {
-        self.uint_at_offset(py, offset, 2)
+    /// The little-endian 16-bit value at a file offset, or `None` past the end of the file
+    /// or for a negative offset.
+    fn get_word_from_offset(&self, offset: &Bound<'_, PyAny>) -> PyResult<Option<u64>> {
+        self.uint_at_offset(offset, 2)
     }
 
-    /// The little-endian 32-bit value at a file offset, or `None` past the end of the file.
-    fn get_dword_from_offset(&self, py: Python<'_>, offset: i64) -> Option<u64> {
-        self.uint_at_offset(py, offset, 4)
+    /// The little-endian 32-bit value at a file offset, or `None` past the end of the file
+    /// or for a negative offset.
+    fn get_dword_from_offset(&self, offset: &Bound<'_, PyAny>) -> PyResult<Option<u64>> {
+        self.uint_at_offset(offset, 4)
     }
 
-    /// The little-endian 64-bit value at a file offset, or `None` past the end of the file.
-    fn get_qword_from_offset(&self, py: Python<'_>, offset: i64) -> Option<u64> {
-        self.uint_at_offset(py, offset, 8)
+    /// The little-endian 64-bit value at a file offset, or `None` past the end of the file
+    /// or for a negative offset.
+    fn get_qword_from_offset(&self, offset: &Bound<'_, PyAny>) -> PyResult<Option<u64>> {
+        self.uint_at_offset(offset, 8)
     }
 
-    /// The bytes at an RVA up to the first NUL, reading at most `max_length` bytes. An RVA
-    /// outside every section is read as a file offset, as pefile does.
-    #[pyo3(signature = (rva, max_length=MAX_STRING_LENGTH))]
+    /// The bytes at an RVA up to the first NUL, reading at most `max_length` bytes (pefile's
+    /// `MAX_STRING_LENGTH` when omitted). An RVA outside every section is read as a file
+    /// offset, as pefile does. `None` for a negative RVA, or when `rva` is `None`.
+    #[pyo3(signature = (rva, max_length=None))]
     fn get_string_at_rva<'py>(
         &self,
         py: Python<'py>,
-        rva: Option<i64>,
-        max_length: i64,
+        rva: Option<&Bound<'py, PyAny>>,
+        max_length: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Option<Bound<'py, PyBytes>>> {
-        let Some(rva) = rva else {
+        let rva = rva.map(saturating_i64).transpose()?;
+        let Some(rva) = rva.filter(|&rva| rva >= 0) else {
             return Ok(None);
         };
+        let max_length = max_length.map_or(Ok(MAX_STRING_LENGTH), saturating_i64)?;
         let file = self.data.as_bytes(py);
         let string = no_panic(|| {
             let range = match self.pe.section_by_rva(rva) {
@@ -1354,20 +1365,39 @@ impl PE {
 const MAX_STRING_LENGTH: i64 = 0x100000;
 
 impl PE {
-    fn uint_at_rva(&self, py: Python<'_>, rva: i64, size: usize) -> PyResult<Option<u64>> {
-        let file = self.data.as_bytes(py);
-        let range = no_panic(|| self.pe.data_range(rva, Some(size as i64)))?;
-        Ok(range.and_then(|range| little_endian(&file[range], size)))
+    /// `None` for a negative RVA. pefile would read from the end of the headers or the file.
+    fn uint_at_rva(&self, rva: &Bound<'_, PyAny>, size: usize) -> PyResult<Option<u64>> {
+        let file = self.data.as_bytes(rva.py());
+        let rva = saturating_i64(rva)?;
+        if rva < 0 {
+            return Ok(None);
+        }
+        no_panic(|| {
+            let range = self.pe.data_range(rva, Some(size as i64))?;
+            little_endian(&file[range], size)
+        })
     }
 
-    /// `None` for a negative offset too. pefile would count that from the end of the file.
-    fn uint_at_offset(&self, py: Python<'_>, offset: i64, size: usize) -> Option<u64> {
-        let start = usize::try_from(offset).ok()?;
-        let bytes = self
-            .data
-            .as_bytes(py)
-            .get(start..start.checked_add(size)?)?;
-        little_endian(bytes, size)
+    /// `None` for a negative offset. pefile would count that from the end of the file.
+    fn uint_at_offset(&self, offset: &Bound<'_, PyAny>, size: usize) -> PyResult<Option<u64>> {
+        let file = self.data.as_bytes(offset.py());
+        let Ok(start) = usize::try_from(saturating_i64(offset)?) else {
+            return Ok(None);
+        };
+        let bytes = start.checked_add(size).and_then(|end| file.get(start..end));
+        Ok(bytes.and_then(|bytes| little_endian(bytes, size)))
+    }
+}
+
+/// A Python integer as an `i64`, pinned to the nearest end of the range when it does not fit.
+/// No address or length that large can be inside a file, so the caller treats it as out of
+/// range, where an `OverflowError` would surprise code written for pefile.
+fn saturating_i64(value: &Bound<'_, PyAny>) -> PyResult<i64> {
+    match value.extract::<i64>() {
+        Err(e) if e.is_instance_of::<PyOverflowError>(value.py()) => {
+            Ok(if value.lt(0)? { i64::MIN } else { i64::MAX })
+        }
+        other => other,
     }
 }
 
