@@ -33,8 +33,9 @@ impl Seen {
         }
     }
 
-    /// Call once per block, before its entries. A block is at least 8 bytes of a file whose
-    /// length fits in memory, so the counter cannot wrap round to a number still in the table.
+    /// Call once per block, before its entries. Each block moves at least one byte through a
+    /// directory whose size is a `u32`, so the counter cannot wrap round to a number still in
+    /// the table.
     fn next_block(&mut self) {
         self.block += 1;
     }

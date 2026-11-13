@@ -116,12 +116,12 @@ impl Pe {
 pub fn parse(data: &[u8]) -> Result<Pe, Error> {
     let opts = ParseOptions::default();
     let header = Header::parse(data)?;
-    let pe = Tables::read(data, &header, &opts)?;
+    let tables = Tables::read(data, &header, &opts)?;
     let headers = headers::from_goblin(&header)?;
     let optional_header_offset = headers.dos_header.e_lfanew as usize + 24;
-    let imports = imports(&pe, headers.optional_header.image_base);
-    let exports = exports(data, &pe, headers.optional_header.file_alignment, &opts);
-    let mut sections = pe.sections;
+    let imports = imports(&tables, headers.optional_header.image_base);
+    let exports = exports(data, &tables, headers.optional_header.file_alignment, &opts);
+    let mut sections = tables.sections;
     // pefile orders sections by VirtualAddress, not by section-table position.
     sections.sort_by_key(|s| s.virtual_address);
     let mut pe = Pe {
@@ -207,11 +207,11 @@ impl<'a> Tables<'a> {
     }
 }
 
-fn imports(pe: &Tables, image_base: u64) -> Vec<ImportDll> {
-    let Some(import_data) = &pe.import_data else {
+fn imports(tables: &Tables, image_base: u64) -> Vec<ImportDll> {
+    let Some(import_data) = &tables.import_data else {
         return Vec::new();
     };
-    let thunk_size = if pe.is_64 { 8 } else { 4 };
+    let thunk_size = if tables.is_64 { 8 } else { 4 };
     import_data
         .import_data
         .iter()
@@ -253,18 +253,18 @@ fn imports(pe: &Tables, image_base: u64) -> Vec<ImportDll> {
 /// Named exports in name-table order, then ordinal-only exports, matching pefile.
 fn exports(
     data: &[u8],
-    pe: &Tables,
+    tables: &Tables,
     file_alignment: u32,
     opts: &ParseOptions,
 ) -> Vec<ExportSymbol> {
-    let Some(export_data) = &pe.export_data else {
+    let Some(export_data) = &tables.export_data else {
         return Vec::new();
     };
     let base = export_data.export_directory_table.ordinal_base;
     let addresses = &export_data.export_address_table;
     let c_string_at = |rva: u32| {
         let offset =
-            goblin::pe::utils::find_offset(rva as usize, &pe.sections, file_alignment, opts)?;
+            goblin::pe::utils::find_offset(rva as usize, &tables.sections, file_alignment, opts)?;
         let bytes = data.get(offset..)?;
         let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
         Some(bytes[..end].to_vec())
