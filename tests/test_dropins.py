@@ -41,9 +41,48 @@ def test_integer_readers_match_pefile(pair, width):
             assert getattr(ours, method)(point) == getattr(theirs, method)(point), (method, point)
 
 
-def test_integer_readers_return_none_for_a_negative_offset():
+READERS = [
+    f"get_{width}_{kind}"
+    for width in ("word", "dword", "qword")
+    for kind in ("at_rva", "from_offset")
+]
+
+
+@pytest.mark.parametrize("method", READERS + ["get_string_at_rva"])
+@pytest.mark.parametrize("address", [-1, -8, -(2**70)])
+def test_readers_return_none_for_a_negative_address(method, address):
+    """pefile reads from the end of the headers or the file here, by accident of slicing."""
     pe = peoxide.PE(str(FILES[0]))
-    assert pe.get_dword_from_offset(-8) is None
+    assert getattr(pe, method)(address) is None
+
+
+@pytest.mark.parametrize("method", READERS)
+@pytest.mark.parametrize("address", [2**63, 2**64, 2**70])
+def test_integer_readers_return_none_for_an_address_too_large_for_any_file(pair, method, address):
+    ours, theirs = pair
+    assert getattr(ours, method)(address) is None
+    assert getattr(theirs, method)(address) is None
+
+
+def test_get_string_at_rva_takes_values_too_large_for_any_file(pair):
+    ours, theirs = pair
+    assert ours.get_string_at_rva(2**70) == theirs.get_string_at_rva(2**70) == b""
+    assert ours.get_string_at_rva(0x40, 2**70) == theirs.get_string_at_rva(0x40, 2**70)
+    assert ours.get_string_at_rva(0x40, -1) == theirs.get_string_at_rva(0x40, -1)
+    assert ours.get_string_at_rva(0x40, 0) == theirs.get_string_at_rva(0x40, 0) == b""
+
+
+@pytest.mark.parametrize("method", READERS + ["get_string_at_rva"])
+def test_readers_reject_an_address_that_is_not_an_integer(method):
+    with pytest.raises(TypeError):
+        getattr(peoxide.PE(str(FILES[0])), method)("0x10")
+
+
+def test_parse_data_directories_takes_only_the_arguments_pefile_takes():
+    pe = peoxide.PE(str(FILES[0]))
+    pe.parse_data_directories([1], forwarded_exports_only=True, import_dllnames_only=True)
+    with pytest.raises(TypeError):
+        pe.parse_data_directories(directorys=[1])
 
 
 def test_get_string_at_rva_matches_pefile(pair):
