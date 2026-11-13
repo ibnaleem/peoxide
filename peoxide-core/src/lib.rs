@@ -41,7 +41,6 @@ pub struct Pe {
     pub exports: Vec<ExportSymbol>,
     pub debug: Vec<DebugDirectory>,
     pub rich_header: Option<RichHeader>,
-    pub relocations: Vec<RelocationBlock>,
     /// `None` where pefile leaves `DIRECTORY_ENTRY_RESOURCE` undefined.
     pub resources: Option<ResourceDirectory>,
     pub version: Version,
@@ -136,14 +135,12 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
         exports,
         debug: Vec::new(),
         rich_header: rich::parse(data, optional_header_offset),
-        relocations: Vec::new(),
         resources: None,
         version: Version::default(),
     };
     // These directories are read through RVAs, which need the section layouts above.
     pe.delay_imports = pe.parse_delay_imports(data);
     pe.debug = pe.parse_debug_directory(data);
-    pe.relocations = pe.parse_relocations(data);
     pe.resources = pe.parse_resources(data);
     pe.version = pe.parse_version(data);
     Ok(pe)
@@ -451,7 +448,9 @@ mod tests {
         ];
         // Ok or Err are both fine; only a panic fails.
         for data in crafted {
-            let _ = parse(data);
+            if let Ok(pe) = parse(data) {
+                let _ = pe.parse_relocations(data);
+            }
         }
     }
 }

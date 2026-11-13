@@ -968,17 +968,16 @@ struct PE {
     OPTIONAL_HEADER: Py<OptionalHeader>,
     #[pyo3(get)]
     sections: Py<PyList>,
-    #[pyo3(get)]
-    DIRECTORY_ENTRY_IMPORT: Py<PyList>,
-    #[pyo3(get)]
-    DIRECTORY_ENTRY_EXPORT: Py<ExportDirData>,
-    #[pyo3(get)]
-    DIRECTORY_ENTRY_DELAY_IMPORT: Py<PyList>,
+    /// Built on first access, like everything below held in a `PyOnceLock`. A large DLL has
+    /// thousands of imports and exports, and building their Python objects took about a third
+    /// of `PE()`, all of it with the GIL held.
+    imports: PyOnceLock<Py<PyList>>,
+    exports: PyOnceLock<Py<ExportDirData>>,
+    delay_imports: PyOnceLock<Py<PyList>>,
     #[pyo3(get)]
     DIRECTORY_ENTRY_DEBUG: Py<PyList>,
     #[pyo3(get)]
     RICH_HEADER: Option<Py<RichHeader>>,
-    /// Built on first access: relocation lists run to tens of thousands of entries.
     relocations: PyOnceLock<Py<PyList>>,
     resources: PyOnceLock<Option<Py<ResourceDirData>>>,
     version: VersionLists,
@@ -1046,9 +1045,9 @@ impl PE {
                     .collect::<PyResult<Vec<_>>>()?,
             )?
             .unbind(),
-            DIRECTORY_ENTRY_IMPORT: list(py, &pe.imports, ImportDescData::new)?,
-            DIRECTORY_ENTRY_EXPORT: Py::new(py, ExportDirData::new(py, &pe.exports)?)?,
-            DIRECTORY_ENTRY_DELAY_IMPORT: list(py, &pe.delay_imports, ImportDescData::new)?,
+            imports: PyOnceLock::new(),
+            exports: PyOnceLock::new(),
+            delay_imports: PyOnceLock::new(),
             DIRECTORY_ENTRY_DEBUG: list(py, &pe.debug, DebugData::new)?,
             RICH_HEADER: pe
                 .rich_header
@@ -1150,12 +1149,39 @@ impl PE {
         })
     }
 
+    /// Imported DLLs, empty when the file imports nothing.
+    #[getter]
+    fn DIRECTORY_ENTRY_IMPORT(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
+        self.imports
+            .get_or_try_init(py, || list(py, &self.pe.imports, ImportDescData::new))
+            .map(|l| l.clone_ref(py))
+    }
+
+    /// The export directory, with an empty `symbols` list when the file exports nothing.
+    #[getter]
+    fn DIRECTORY_ENTRY_EXPORT(&self, py: Python<'_>) -> PyResult<Py<ExportDirData>> {
+        self.exports
+            .get_or_try_init(py, || {
+                Py::new(py, ExportDirData::new(py, &self.pe.exports)?)
+            })
+            .map(|e| e.clone_ref(py))
+    }
+
+    /// Delay-loaded DLLs, empty when the file has none.
+    #[getter]
+    fn DIRECTORY_ENTRY_DELAY_IMPORT(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
+        self.delay_imports
+            .get_or_try_init(py, || list(py, &self.pe.delay_imports, ImportDescData::new))
+            .map(|l| l.clone_ref(py))
+    }
+
     /// Base relocation blocks, empty when the file has none.
     #[getter]
     fn DIRECTORY_ENTRY_BASERELOC(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
         self.relocations
             .get_or_try_init(py, || {
-                no_panic(|| list(py, &self.pe.relocations, BaseRelocationData::new))?
+                let blocks = no_panic(|| self.pe.parse_relocations(self.data.as_bytes(py)))?;
+                list(py, &blocks, BaseRelocationData::new)
             })
             .map(|l| l.clone_ref(py))
     }

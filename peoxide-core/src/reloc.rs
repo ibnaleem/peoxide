@@ -72,7 +72,11 @@ impl Pe {
         data.get(self.data_range(rva, Some(length))?)
     }
 
-    pub(crate) fn parse_relocations(&self, data: &[u8]) -> Vec<RelocationBlock> {
+    /// The base relocation blocks of `data`, the file this `Pe` was parsed from.
+    ///
+    /// `parse` leaves these out. A large image has tens of thousands of entries, most callers
+    /// never read them, and building them took about a third of the parse.
+    pub fn parse_relocations(&self, data: &[u8]) -> Vec<RelocationBlock> {
         let Some(directory) = self
             .headers
             .optional_header
