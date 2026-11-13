@@ -57,7 +57,14 @@ fn no_panic<T>(f: impl FnOnce() -> T) -> PyResult<T> {
 fn read_file<'py>(py: Python<'py>, path: &std::path::Path) -> PyResult<Bound<'py, PyBytes>> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
-    let len = usize::try_from(file.metadata()?.len())
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        // A pipe or device reports no length, so it is read to its end instead.
+        let mut contents = Vec::new();
+        py.detach(|| file.read_to_end(&mut contents))?;
+        return Ok(PyBytes::new(py, &contents));
+    }
+    let len = usize::try_from(metadata.len())
         .map_err(|_| PyOSError::new_err("file is too large to load"))?;
     PyBytes::new_with(py, len, |buffer| {
         py.detach(|| file.read_exact(buffer))?;
