@@ -68,6 +68,7 @@ fn exercise(pe: &Pe, data: &[u8]) {
     let _ = (pe.is_dll(), pe.is_exe(), pe.is_driver());
     let _ = (pe.imphash_input(), pe.exphash_input());
     let _ = pe.parse_relocations(data);
+    let _ = pe.checksum(data);
     if let Some(offset) = pe.overlay_offset() {
         let _ = &data[offset..];
     }
