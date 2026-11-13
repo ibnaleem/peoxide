@@ -2,8 +2,9 @@
 
 use pyo3::IntoPyObjectExt;
 use pyo3::PyClass;
+use pyo3::buffer::PyBuffer;
 use pyo3::create_exception;
-use pyo3::exceptions::{PyAttributeError, PyException, PyTypeError};
+use pyo3::exceptions::{PyAttributeError, PyException, PyOSError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
@@ -50,6 +51,34 @@ fn no_panic<T>(f: impl FnOnce() -> T) -> PyResult<T> {
              with the file, at https://github.com/ibnaleem/peoxide/issues",
         )
     })
+}
+
+/// The file's contents, read into the `bytes` object itself so the file is held only once.
+fn read_file<'py>(py: Python<'py>, path: &std::path::Path) -> PyResult<Bound<'py, PyBytes>> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let len = usize::try_from(file.metadata()?.len())
+        .map_err(|_| PyOSError::new_err("file is too large to load"))?;
+    PyBytes::new_with(py, len, |buffer| {
+        py.detach(|| file.read_exact(buffer))?;
+        Ok(())
+    })
+}
+
+/// `data` as `bytes`. Other bytes-like objects (`bytearray`, `mmap`, `memoryview`) are copied
+/// once, because the parser runs without the GIL and they could change or shrink under it.
+fn immutable_bytes(data: Bound<'_, PyAny>) -> PyResult<Bound<'_, PyBytes>> {
+    let data = match data.cast_into::<PyBytes>() {
+        Ok(bytes) => return Ok(bytes),
+        Err(e) => e.into_inner(),
+    };
+    PyBuffer::<u8>::get(&data)
+        .map_err(|_| PyTypeError::new_err("data must be bytes or another bytes-like object"))?;
+    data.py()
+        .get_type::<PyBytes>()
+        .call1((data,))?
+        .cast_into()
+        .map_err(Into::into)
 }
 
 fn bytes(py: Python<'_>, b: &[u8]) -> Py<PyBytes> {
@@ -965,11 +994,11 @@ impl PE {
     fn new(
         py: Python<'_>,
         name: Option<std::path::PathBuf>,
-        data: Option<Bound<'_, PyBytes>>,
+        data: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let data = match (name, data) {
-            (Some(path), None) => PyBytes::new(py, &std::fs::read(path)?),
-            (None, Some(data)) => data,
+            (Some(path), None) => read_file(py, &path)?,
+            (None, Some(data)) => immutable_bytes(data)?,
             _ => {
                 return Err(PyTypeError::new_err(
                     "PE() takes exactly one of name or data",
@@ -978,7 +1007,9 @@ impl PE {
         };
         // A panic would reach Python as PanicException, which slips past `except Exception`.
         let bytes = data.as_bytes();
-        let pe = std::panic::catch_unwind(|| peoxide_core::parse(bytes))
+        // `bytes` cannot change under the parser, so other Python threads may run meanwhile.
+        let pe = py
+            .detach(|| std::panic::catch_unwind(|| peoxide_core::parse(bytes)))
             .map_err(|_| {
                 PEFormatError::new_err(
                     "internal peoxide error while parsing this file; please report it, \
