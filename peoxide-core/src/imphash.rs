@@ -18,8 +18,19 @@ pub fn ordinal_name(dll: &[u8], ordinal: u16) -> Vec<u8> {
         .unwrap_or_else(|| format!("ord{ordinal}").into_bytes())
 }
 
+/// Appends `bytes` in lowercase. Names are nearly always ASCII, which needs no decoding.
+fn push_lower(out: &mut String, bytes: &[u8]) {
+    if bytes.is_ascii() {
+        out.extend(bytes.iter().map(|b| b.to_ascii_lowercase() as char));
+    } else {
+        out.push_str(&String::from_utf8_lossy(bytes).to_lowercase());
+    }
+}
+
 fn lower(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).to_lowercase()
+    let mut out = String::with_capacity(bytes.len());
+    push_lower(&mut out, bytes);
+    out
 }
 
 impl Pe {
@@ -28,23 +39,30 @@ impl Pe {
         if self.imports.is_empty() {
             return None;
         }
-        let pairs = self.imports.iter().flat_map(|entry| {
+        let mut input = String::new();
+        for entry in &self.imports {
             let dll = lower(&entry.dll);
             let library = match dll.rsplit_once('.') {
-                Some((stem, ext)) if STRIPPED_EXTENSIONS.contains(&ext) => stem.to_owned(),
-                _ => dll,
+                Some((stem, ext)) if STRIPPED_EXTENSIONS.contains(&ext) => stem,
+                _ => &dll,
             };
-            entry.imports.iter().map(move |import| {
-                let function = match (&import.name, import.ordinal) {
-                    (Some(name), _) if !name.is_empty() => lower(name),
-                    (_, Some(ordinal)) => lower(&ordinal_name(&entry.dll, ordinal)),
+            for import in &entry.imports {
+                if !input.is_empty() {
+                    input.push(',');
+                }
+                input.push_str(library);
+                input.push('.');
+                match (&import.name, import.ordinal) {
+                    (Some(name), _) if !name.is_empty() => push_lower(&mut input, name),
+                    (_, Some(ordinal)) => {
+                        push_lower(&mut input, &ordinal_name(&entry.dll, ordinal))
+                    }
                     // pefile formats a missing ordinal as Python's None.
-                    _ => "ordnone".to_owned(),
-                };
-                format!("{library}.{function}")
-            })
-        });
-        Some(pairs.collect::<Vec<_>>().join(","))
+                    _ => input.push_str("ordnone"),
+                }
+            }
+        }
+        Some(input)
     }
 
     /// Lowercase named exports joined by commas, or `None` when nothing is exported by name.
