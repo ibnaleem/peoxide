@@ -77,14 +77,26 @@ def imports(section, wide, dlls):
     return section.put(descriptors), len(descriptors)
 
 
-def delay_imports(section, dll, names):
-    """One 64-bit delay-load descriptor with RVA-based (attributes 1) tables."""
+def shared_imports(section, dll, names, count):
+    """`count` 64-bit import descriptors that all share one pair of thunk tables."""
+    hints = [section.put(b"\0\0" + name + b"\0", 2) for name in names]
+    table = b"".join(struct.pack("<Q", rva) for rva in hints + [0])
+    ilt, iat = section.put(table, 8), section.put(table, 8)
+    descriptor = struct.pack("<5I", ilt, 0, 0, section.put(dll + b"\0", 1), iat)
+    descriptors = descriptor * count + bytes(20)
+    return section.put(descriptors), len(descriptors)
+
+
+def delay_imports(section, dll, names, count=1):
+    """`count` 64-bit delay-load descriptors with RVA-based (attributes 1) tables, all
+    sharing one pair of thunk tables."""
     hints = [section.put(b"\0\0" + name + b"\0", 2) for name in names]
     table = b"".join(struct.pack("<Q", rva) for rva in hints + [0])
     names_table, iat = section.put(table, 8), section.put(table, 8)
     name = section.put(dll + b"\0", 1)
-    descriptor = struct.pack("<8I", 1, name, 0, iat, names_table, 0, 0, 0) + bytes(32)
-    return section.put(descriptor), len(descriptor)
+    descriptor = struct.pack("<8I", 1, name, 0, iat, names_table, 0, 0, 0)
+    descriptors = descriptor * count + bytes(32)
+    return section.put(descriptors), len(descriptors)
 
 
 def exports(section, dll, functions, named, base=1):
@@ -234,7 +246,8 @@ def fixtures():
 
 
 def crafted():
-    """Malformed files the parser must get through without panicking. Not compared with pefile."""
+    """Malformed files the parser must get through without panicking. Not compared field by
+    field with pefile."""
     ntdll = [(b"ntdll.dll", [b"RtlFreeHeap"])]
 
     def resource_root(root):
@@ -261,7 +274,29 @@ def crafted():
             },
         ),
     ]
+    # Each descriptor reads 2 x 1,001 thunks, so pefile's 0x2000 cap falls partway through
+    # the fifth descriptor's lookup table.
+    shared_names = [b"F%03X" % i for i in range(1000)]
+    shared_thunks = [
+        (b".text", CODE, code),
+        (b".rdata", DATA, lambda s: {DIR_IMPORT: shared_imports(s, b"shared.dll", shared_names, 2048)}),
+    ]
+    shared_delay_thunks = [
+        (b".text", CODE, code),
+        (
+            b".rdata",
+            DATA,
+            lambda s: {
+                DIR_IMPORT: imports(s, True, ntdll),
+                DIR_DELAY: delay_imports(s, b"shared.dll", shared_names, 16),
+            },
+        ),
+    ]
     return {
+        # 2,048 import descriptors share one table of 1,000 imports.
+        "shared_thunks.dll": build(AMD64, True, 0x2022, GUI, shared_thunks),
+        # Imports stay under the cap, and 16 delay-import descriptors sharing one table cross it.
+        "shared_delay_thunks.dll": build(AMD64, True, 0x2022, GUI, shared_delay_thunks),
         # The resource root claims 131,070 entries in a 16-byte directory.
         "huge_count.dll": build(AMD64, True, 0x2022, GUI, huge_count),
         # The resource root's only entry is the root itself.
