@@ -4,6 +4,7 @@ mod delay;
 pub use debug::{DebugDirectory, DebugEntry};
 mod headers;
 mod imphash;
+mod imports;
 mod ordinals;
 mod reloc;
 mod resource;
