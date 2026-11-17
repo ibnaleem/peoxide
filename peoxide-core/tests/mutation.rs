@@ -8,10 +8,12 @@ use peoxide_core::{Pe, clamp, entropy, parse};
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 
-const FIXTURES: [&[u8]; 3] = [
+const FIXTURES: [&[u8]; 4] = [
     include_bytes!("../../tests/fixtures/sample64.dll"),
     include_bytes!("../../tests/fixtures/sample32.exe"),
     include_bytes!("../../tests/fixtures/driver.sys"),
+    // The only seed with delay imports, and with import tables near pefile's symbol cap.
+    include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll"),
 ];
 /// Share of edits aimed at the headers, section table and data directories.
 const HOT_EDIT_SHARE: f64 = 0.7;

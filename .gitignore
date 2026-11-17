@@ -74,3 +74,4 @@ skills-lock.json
 .ignore
 __pycache__/
 AGENTS.md.bak*
+ROADMAP.md
