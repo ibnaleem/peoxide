@@ -1,0 +1,3 @@
+# The compiled extension. peoxide/__init__.py re-exports everything it defines, and the
+# stub describes the package.
+peoxide.peoxide
