@@ -177,6 +177,15 @@ jobs:
         with:
           command: sdist
           args: --out dist
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Build the sdist from source and parse a fixture
+        run: |
+          python -m venv "$RUNNER_TEMP/smoke"
+          "$RUNNER_TEMP/smoke/bin/pip" install dist/*.tar.gz
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/smoke/bin/python" -c "import peoxide, sys; assert peoxide.PE(sys.argv[1]).is_dll()" "$GITHUB_WORKSPACE/tests/fixtures/sample64.dll"
       - name: Upload sdist
         uses: actions/upload-artifact@v6
         with:
