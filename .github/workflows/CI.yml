@@ -204,8 +204,6 @@ jobs:
     permissions:
       # Use to sign the release artifacts
       id-token: write
-      # Used to upload release artifacts
-      contents: write
       # Used to generate artifact attestation
       attestations: write
     steps:
@@ -220,9 +218,7 @@ jobs:
       # rehearsed without touching PyPI.
       - name: Publish to TestPyPI
         if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: uv publish --trusted-publishing always --publish-url https://test.pypi.org/legacy/ 'wheels-*/*'
+        run: uv publish --trusted-publishing always --publish-url https://test.pypi.org/legacy/ --check-url https://test.pypi.org/simple/ 'wheels-*/*'
       - name: Publish to PyPI
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-        run: uv publish 'wheels-*/*'
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/ 'wheels-*/*'
