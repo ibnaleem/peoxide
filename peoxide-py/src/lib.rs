@@ -2,8 +2,9 @@
 
 use pyo3::IntoPyObjectExt;
 use pyo3::PyClass;
+use pyo3::buffer::PyBuffer;
 use pyo3::create_exception;
-use pyo3::exceptions::{PyAttributeError, PyException, PyTypeError};
+use pyo3::exceptions::{PyAttributeError, PyException, PyOSError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
@@ -50,6 +51,41 @@ fn no_panic<T>(f: impl FnOnce() -> T) -> PyResult<T> {
              with the file, at https://github.com/ibnaleem/peoxide/issues",
         )
     })
+}
+
+/// The file's contents, read into the `bytes` object itself so the file is held only once.
+fn read_file<'py>(py: Python<'py>, path: &std::path::Path) -> PyResult<Bound<'py, PyBytes>> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        // A pipe or device reports no length, so it is read to its end instead.
+        let mut contents = Vec::new();
+        py.detach(|| file.read_to_end(&mut contents))?;
+        return Ok(PyBytes::new(py, &contents));
+    }
+    let len = usize::try_from(metadata.len())
+        .map_err(|_| PyOSError::new_err("file is too large to load"))?;
+    PyBytes::new_with(py, len, |buffer| {
+        py.detach(|| file.read_exact(buffer))?;
+        Ok(())
+    })
+}
+
+/// `data` as `bytes`. Other bytes-like objects (`bytearray`, `mmap`, `memoryview`) are copied
+/// once, because the parser runs without the GIL and they could change or shrink under it.
+fn immutable_bytes(data: Bound<'_, PyAny>) -> PyResult<Bound<'_, PyBytes>> {
+    let data = match data.cast_into::<PyBytes>() {
+        Ok(bytes) => return Ok(bytes),
+        Err(e) => e.into_inner(),
+    };
+    PyBuffer::<u8>::get(&data)
+        .map_err(|_| PyTypeError::new_err("data must be bytes or another bytes-like object"))?;
+    data.py()
+        .get_type::<PyBytes>()
+        .call1((data,))?
+        .cast_into()
+        .map_err(Into::into)
 }
 
 fn bytes(py: Python<'_>, b: &[u8]) -> Py<PyBytes> {
@@ -939,17 +975,16 @@ struct PE {
     OPTIONAL_HEADER: Py<OptionalHeader>,
     #[pyo3(get)]
     sections: Py<PyList>,
-    #[pyo3(get)]
-    DIRECTORY_ENTRY_IMPORT: Py<PyList>,
-    #[pyo3(get)]
-    DIRECTORY_ENTRY_EXPORT: Py<ExportDirData>,
-    #[pyo3(get)]
-    DIRECTORY_ENTRY_DELAY_IMPORT: Py<PyList>,
+    /// Built on first access, like everything below held in a `PyOnceLock`. A large DLL has
+    /// thousands of imports and exports, and building their Python objects took about a third
+    /// of `PE()`, all of it with the GIL held.
+    imports: PyOnceLock<Py<PyList>>,
+    exports: PyOnceLock<Py<ExportDirData>>,
+    delay_imports: PyOnceLock<Py<PyList>>,
     #[pyo3(get)]
     DIRECTORY_ENTRY_DEBUG: Py<PyList>,
     #[pyo3(get)]
     RICH_HEADER: Option<Py<RichHeader>>,
-    /// Built on first access: relocation lists run to tens of thousands of entries.
     relocations: PyOnceLock<Py<PyList>>,
     resources: PyOnceLock<Option<Py<ResourceDirData>>>,
     version: VersionLists,
@@ -965,11 +1000,11 @@ impl PE {
     fn new(
         py: Python<'_>,
         name: Option<std::path::PathBuf>,
-        data: Option<Bound<'_, PyBytes>>,
+        data: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let data = match (name, data) {
-            (Some(path), None) => PyBytes::new(py, &std::fs::read(path)?),
-            (None, Some(data)) => data,
+            (Some(path), None) => read_file(py, &path)?,
+            (None, Some(data)) => immutable_bytes(data)?,
             _ => {
                 return Err(PyTypeError::new_err(
                     "PE() takes exactly one of name or data",
@@ -978,7 +1013,9 @@ impl PE {
         };
         // A panic would reach Python as PanicException, which slips past `except Exception`.
         let bytes = data.as_bytes();
-        let pe = std::panic::catch_unwind(|| peoxide_core::parse(bytes))
+        // `bytes` cannot change under the parser, so other Python threads may run meanwhile.
+        let pe = py
+            .detach(|| std::panic::catch_unwind(|| peoxide_core::parse(bytes)))
             .map_err(|_| {
                 PEFormatError::new_err(
                     "internal peoxide error while parsing this file; please report it, \
@@ -1015,9 +1052,9 @@ impl PE {
                     .collect::<PyResult<Vec<_>>>()?,
             )?
             .unbind(),
-            DIRECTORY_ENTRY_IMPORT: list(py, &pe.imports, ImportDescData::new)?,
-            DIRECTORY_ENTRY_EXPORT: Py::new(py, ExportDirData::new(py, &pe.exports)?)?,
-            DIRECTORY_ENTRY_DELAY_IMPORT: list(py, &pe.delay_imports, ImportDescData::new)?,
+            imports: PyOnceLock::new(),
+            exports: PyOnceLock::new(),
+            delay_imports: PyOnceLock::new(),
             DIRECTORY_ENTRY_DEBUG: list(py, &pe.debug, DebugData::new)?,
             RICH_HEADER: pe
                 .rich_header
@@ -1119,12 +1156,39 @@ impl PE {
         })
     }
 
+    /// Imported DLLs, empty when the file imports nothing.
+    #[getter]
+    fn DIRECTORY_ENTRY_IMPORT(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
+        self.imports
+            .get_or_try_init(py, || list(py, &self.pe.imports, ImportDescData::new))
+            .map(|l| l.clone_ref(py))
+    }
+
+    /// The export directory, with an empty `symbols` list when the file exports nothing.
+    #[getter]
+    fn DIRECTORY_ENTRY_EXPORT(&self, py: Python<'_>) -> PyResult<Py<ExportDirData>> {
+        self.exports
+            .get_or_try_init(py, || {
+                Py::new(py, ExportDirData::new(py, &self.pe.exports)?)
+            })
+            .map(|e| e.clone_ref(py))
+    }
+
+    /// Delay-loaded DLLs, empty when the file has none.
+    #[getter]
+    fn DIRECTORY_ENTRY_DELAY_IMPORT(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
+        self.delay_imports
+            .get_or_try_init(py, || list(py, &self.pe.delay_imports, ImportDescData::new))
+            .map(|l| l.clone_ref(py))
+    }
+
     /// Base relocation blocks, empty when the file has none.
     #[getter]
     fn DIRECTORY_ENTRY_BASERELOC(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
         self.relocations
             .get_or_try_init(py, || {
-                no_panic(|| list(py, &self.pe.relocations, BaseRelocationData::new))?
+                let blocks = no_panic(|| self.pe.parse_relocations(self.data.as_bytes(py)))?;
+                list(py, &blocks, BaseRelocationData::new)
             })
             .map(|l| l.clone_ref(py))
     }

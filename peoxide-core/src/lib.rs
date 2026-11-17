@@ -20,9 +20,11 @@ pub use imphash::ordinal_name;
 pub use rich::RichHeader;
 pub use version::{BlockHeader, FileInfo, FixedFileInfo, StringTable, Var, Version, VersionInfo};
 
-use goblin::pe::PE;
-use goblin::pe::export::ExportAddressTableEntry;
-use goblin::pe::import::SyntheticImportLookupTableEntry;
+use goblin::container::Container;
+use goblin::pe::export::{ExportAddressTableEntry, ExportData};
+use goblin::pe::header::{Header, SIZEOF_COFF_HEADER, SIZEOF_PE_MAGIC};
+use goblin::pe::import::{ImportData, SyntheticImportLookupTableEntry};
+use goblin::pe::optional_header::{MAGIC_32, MAGIC_64};
 use goblin::pe::options::ParseOptions;
 use goblin::pe::{characteristic, subsystem};
 
@@ -39,7 +41,6 @@ pub struct Pe {
     pub exports: Vec<ExportSymbol>,
     pub debug: Vec<DebugDirectory>,
     pub rich_header: Option<RichHeader>,
-    pub relocations: Vec<RelocationBlock>,
     /// `None` where pefile leaves `DIRECTORY_ENTRY_RESOURCE` undefined.
     pub resources: Option<ResourceDirectory>,
     pub version: Version,
@@ -113,16 +114,14 @@ impl Pe {
 }
 
 pub fn parse(data: &[u8]) -> Result<Pe, Error> {
-    let mut opts = ParseOptions::default();
-    opts.parse_attribute_certificates = false;
-    let opts = opts.with_parse_resources(false).with_parse_tls_data(false);
-
-    let pe = PE::parse_with_opts(data, &opts)?;
-    let headers = headers::from_goblin(&pe.header)?;
+    let opts = ParseOptions::default();
+    let header = Header::parse(data)?;
+    let tables = Tables::read(data, &header, &opts)?;
+    let headers = headers::from_goblin(&header)?;
     let optional_header_offset = headers.dos_header.e_lfanew as usize + 24;
-    let imports = imports(&pe, headers.optional_header.image_base);
-    let exports = exports(data, &pe, headers.optional_header.file_alignment, &opts);
-    let mut sections = pe.sections;
+    let imports = imports(&tables, headers.optional_header.image_base);
+    let exports = exports(data, &tables, headers.optional_header.file_alignment, &opts);
+    let mut sections = tables.sections;
     // pefile orders sections by VirtualAddress, not by section-table position.
     sections.sort_by_key(|s| s.virtual_address);
     let mut pe = Pe {
@@ -136,14 +135,12 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
         exports,
         debug: Vec::new(),
         rich_header: rich::parse(data, optional_header_offset),
-        relocations: Vec::new(),
         resources: None,
         version: Version::default(),
     };
     // These directories are read through RVAs, which need the section layouts above.
     pe.delay_imports = pe.parse_delay_imports(data);
     pe.debug = pe.parse_debug_directory(data);
-    pe.relocations = pe.parse_relocations(data);
     pe.resources = pe.parse_resources(data);
     pe.version = pe.parse_version(data);
     Ok(pe)
@@ -156,11 +153,65 @@ fn iat_slot_address(image_base: u64, iat_rva: u64, index: usize, thunk_size: usi
         .saturating_add((index as u64).saturating_mul(thunk_size as u64))
 }
 
-fn imports(pe: &PE, image_base: u64) -> Vec<ImportDll> {
-    let Some(import_data) = &pe.import_data else {
+/// The tables peoxide takes from goblin. `goblin::pe::PE::parse` reads these and then also
+/// resolves every import and export into lists of its own and parses the debug, exception,
+/// relocation, load-config and CLR directories. peoxide rebuilds or reparses all of that, so
+/// it asks goblin for the raw tables only.
+struct Tables<'a> {
+    sections: Vec<Section>,
+    is_64: bool,
+    import_data: Option<ImportData<'a>>,
+    export_data: Option<ExportData<'a>>,
+}
+
+impl<'a> Tables<'a> {
+    /// Follows the start of `PE::parse_with_opts`: the same reads, in the same order, failing
+    /// on the same errors.
+    fn read(data: &'a [u8], header: &Header<'a>, opts: &ParseOptions) -> Result<Self, Error> {
+        let sections_offset = &mut (header.dos_header.pe_pointer as usize
+            + SIZEOF_PE_MAGIC
+            + SIZEOF_COFF_HEADER
+            + header.coff_header.size_of_optional_header as usize);
+        let mut tables = Tables {
+            sections: header.coff_header.sections(data, sections_offset)?,
+            is_64: false,
+            import_data: None,
+            export_data: None,
+        };
+        let Some(optional_header) = &header.optional_header else {
+            return Ok(tables);
+        };
+        let magic = optional_header.standard_fields.magic;
+        if magic != MAGIC_32 && magic != MAGIC_64 {
+            return Err(Error::Malformed(format!(
+                "Unsupported header magic ({magic:#x})"
+            )));
+        }
+        tables.is_64 = optional_header.container()? == Container::Big;
+        let alignment = optional_header.windows_fields.file_alignment;
+        let directories = &optional_header.data_directories;
+        if let Some(&table) = directories.get_export_table() {
+            // goblin ignores an export directory it cannot read, and so does pefile.
+            tables.export_data =
+                ExportData::parse_with_opts(data, table, &tables.sections, alignment, opts).ok();
+        }
+        if let Some(&table) = directories.get_import_table() {
+            let sections = &tables.sections;
+            tables.import_data = Some(if tables.is_64 {
+                ImportData::parse_with_opts::<u64>(data, table, sections, alignment, opts)?
+            } else {
+                ImportData::parse_with_opts::<u32>(data, table, sections, alignment, opts)?
+            });
+        }
+        Ok(tables)
+    }
+}
+
+fn imports(tables: &Tables, image_base: u64) -> Vec<ImportDll> {
+    let Some(import_data) = &tables.import_data else {
         return Vec::new();
     };
-    let thunk_size = if pe.is_64 { 8 } else { 4 };
+    let thunk_size = if tables.is_64 { 8 } else { 4 };
     import_data
         .import_data
         .iter()
@@ -200,15 +251,20 @@ fn imports(pe: &PE, image_base: u64) -> Vec<ImportDll> {
 }
 
 /// Named exports in name-table order, then ordinal-only exports, matching pefile.
-fn exports(data: &[u8], pe: &PE, file_alignment: u32, opts: &ParseOptions) -> Vec<ExportSymbol> {
-    let Some(export_data) = &pe.export_data else {
+fn exports(
+    data: &[u8],
+    tables: &Tables,
+    file_alignment: u32,
+    opts: &ParseOptions,
+) -> Vec<ExportSymbol> {
+    let Some(export_data) = &tables.export_data else {
         return Vec::new();
     };
     let base = export_data.export_directory_table.ordinal_base;
     let addresses = &export_data.export_address_table;
     let c_string_at = |rva: u32| {
         let offset =
-            goblin::pe::utils::find_offset(rva as usize, &pe.sections, file_alignment, opts)?;
+            goblin::pe::utils::find_offset(rva as usize, &tables.sections, file_alignment, opts)?;
         let bytes = data.get(offset..)?;
         let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
         Some(bytes[..end].to_vec())
@@ -392,7 +448,9 @@ mod tests {
         ];
         // Ok or Err are both fine; only a panic fails.
         for data in crafted {
-            let _ = parse(data);
+            if let Ok(pe) = parse(data) {
+                let _ = pe.parse_relocations(data);
+            }
         }
     }
 }
