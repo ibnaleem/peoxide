@@ -427,7 +427,9 @@ mod tests {
 
     #[test]
     fn crafted_fixtures_parse_without_panicking() {
-        let crafted: [&[u8]; 5] = [
+        let crafted: [&[u8]; 7] = [
+            include_bytes!("../../tests/fixtures/crafted/shared_thunks.dll"),
+            include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll"),
             include_bytes!("../../tests/fixtures/crafted/huge_count.dll"),
             include_bytes!("../../tests/fixtures/crafted/self_reference.dll"),
             include_bytes!("../../tests/fixtures/crafted/top_image_base.dll"),
@@ -440,5 +442,30 @@ mod tests {
                 let _ = pe.parse_relocations(data);
             }
         }
+    }
+
+    fn import_counts(dlls: &[ImportDll]) -> Vec<usize> {
+        dlls.iter().map(|dll| dll.imports.len()).collect()
+    }
+
+    #[test]
+    fn imports_stop_at_pefiles_symbol_cap() {
+        // 2,048 descriptors share one table of 1,000 imports. Read in full, that is 2,048,000.
+        let data = include_bytes!("../../tests/fixtures/crafted/shared_thunks.dll");
+        let start = std::time::Instant::now();
+        let pe = parse(data).unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_millis(500));
+        // pefile's counts: the cap cuts the fifth lookup table short.
+        assert_eq!(import_counts(&pe.imports), [1000, 1000, 1000, 1000, 185]);
+        assert!(pe.delay_imports.is_empty());
+    }
+
+    #[test]
+    fn delay_imports_drop_the_descriptor_that_passes_the_cap() {
+        let data = include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll");
+        let pe = parse(data).unwrap();
+        assert_eq!(import_counts(&pe.imports), [1]);
+        // pefile's counts: the fifth descriptor passes the cap and is left out.
+        assert_eq!(import_counts(&pe.delay_imports), [1000; 4]);
     }
 }
