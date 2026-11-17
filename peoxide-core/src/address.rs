@@ -252,4 +252,40 @@ impl Pe {
         }
         (rva < self.file_size as i64).then(|| clamp((rva, end), self.file_size))
     }
+
+    /// pefile's `get_{word,dword,qword}_at_rva`: the little-endian integer of `size` bytes
+    /// at `rva`, or `None` where they can't all be read.
+    pub fn uint_at_rva(&self, data: &[u8], rva: i64, size: usize) -> Option<u64> {
+        little_endian(data.get(self.data_range(rva, Some(size as i64))?)?, size)
+    }
+
+    /// pefile's `get_string_at_rva`: the bytes at `rva` up to the first NUL, at most
+    /// `max_length` of them. An RVA outside every section is read as a file offset.
+    pub fn string_at_rva<'a>(&self, data: &'a [u8], rva: i64, max_length: i64) -> &'a [u8] {
+        let range = match self.section_by_rva(rva) {
+            Some(i) => {
+                self.layouts[i].data_range(&self.sections[i], Some(rva), Some(max_length), false)
+            }
+            None => (rva, rva.saturating_add(max_length)),
+        };
+        let bytes = &data[clamp(range, data.len())];
+        let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+        &bytes[..end]
+    }
+}
+
+/// pefile's `get_{word,dword,qword}_from_offset`: the little-endian integer of `size` bytes
+/// at a file offset, or `None` past the end of the file.
+pub fn uint_at_offset(data: &[u8], offset: usize, size: usize) -> Option<u64> {
+    little_endian(data.get(offset..offset.checked_add(size)?)?, size)
+}
+
+/// `bytes` as a little-endian integer, or `None` when there are fewer than `size` of them.
+fn little_endian(bytes: &[u8], size: usize) -> Option<u64> {
+    (bytes.len() == size).then(|| {
+        bytes
+            .iter()
+            .rev()
+            .fold(0, |value, &byte| (value << 8) | u64::from(byte))
+    })
 }
