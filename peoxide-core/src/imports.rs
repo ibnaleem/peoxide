@@ -1,11 +1,15 @@
-//! Thunk tables, shared by the import and delay-import walks. Follows pefile's
-//! `get_import_table` and `parse_imports`.
+//! The import directory, and the thunk tables it shares with the delay-import walk.
+//! Follows pefile's `parse_import_directory`, `get_import_table` and `parse_imports`.
+//! goblin parses imports too, but it reads every table in full, so peoxide does not use it.
 //!
 //! Not ported: pefile's repeated-address and address-spread heuristics for bogus thunk
 //! tables. Clean binaries never reach them.
 
-use crate::{ImportSymbol, Pe};
+use crate::{ImportDll, ImportSymbol, Pe};
 
+const IMPORT_DIRECTORY: usize = 1;
+const IMPORT_DESCRIPTOR_SIZE: i64 = 20;
+const MAX_EMPTY_DESCRIPTORS: u32 = 5;
 const MAX_NAME_LENGTH: i64 = 0x200;
 const MAGIC_PE32_PLUS: u16 = 0x20b;
 const ORDINAL_FLAG_32: u64 = 0x8000_0000;
@@ -158,5 +162,66 @@ impl Pe {
             }
         }
         Some(symbols)
+    }
+
+    /// pefile's `parse_import_directory`.
+    pub(crate) fn parse_imports(&self, data: &[u8]) -> Vec<ImportDll> {
+        let Some(directory) = self
+            .headers
+            .optional_header
+            .data_directory
+            .get(IMPORT_DIRECTORY)
+        else {
+            return Vec::new();
+        };
+        let mut rva = directory.virtual_address as i64;
+        let mut dlls = Vec::new();
+        let mut empty_descriptors = 0;
+        // Each descriptor is read from the file, so the walk never spans more than the file.
+        let end = rva.saturating_add(self.file_size as i64);
+        while rva != 0 && rva < end {
+            let Some(file_offset) = self.offset_from_rva(rva) else {
+                break;
+            };
+            let field = |i: i64| self.uint_at(data, rva + 4 * i, 4).map(|v| v as i64);
+            let Some(fields) = (0..5).map(field).collect::<Option<Vec<i64>>>() else {
+                break;
+            };
+            if fields.iter().all(|&f| f == 0) {
+                break;
+            }
+            let (int, name, iat) = (fields[0], fields[3], fields[4]);
+            rva += IMPORT_DESCRIPTOR_SIZE;
+            let max_length = if rva > int || rva > iat {
+                (rva - int).max(rva - iat)
+            } else {
+                self.file_size as i64 - file_offset
+            }
+            .min(self.file_size as i64);
+            // pefile reads the tables before it checks the error count.
+            let symbols = self
+                .import_symbols(data, int, iat, max_length, false)
+                .unwrap_or_default();
+            if empty_descriptors > MAX_EMPTY_DESCRIPTORS {
+                break;
+            }
+            if symbols.is_empty() {
+                empty_descriptors += 1;
+                continue;
+            }
+            let dll = self.c_string_at(data, name);
+            let dll = if is_valid_dos_filename(&dll) {
+                dll
+            } else {
+                b"*invalid*".to_vec()
+            };
+            if !dll.is_empty() {
+                dlls.push(ImportDll {
+                    dll,
+                    imports: symbols,
+                });
+            }
+        }
+        dlls
     }
 }
