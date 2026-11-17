@@ -322,6 +322,15 @@ def test_corpus_has_delay_imports():
     assert any(peoxide.PE(str(p)).DIRECTORY_ENTRY_DELAY_IMPORT for p in CORPUS)
 
 
+@pytest.mark.parametrize("name", ["shared_thunks.dll", "shared_delay_thunks.dll"])
+def test_import_symbol_cap_matches_pefile(name):
+    path = str(Path(__file__).parent / "fixtures" / "crafted" / name)
+    ours, theirs = peoxide.PE(path), pefile.PE(path)
+    for directory in ("DIRECTORY_ENTRY_IMPORT", "DIRECTORY_ENTRY_DELAY_IMPORT"):
+        expected = getattr(theirs, directory, [])
+        assert import_entries(getattr(ours, directory)) == import_entries(expected)
+
+
 DEBUG_FIELDS = [
     "Characteristics",
     "TimeDateStamp",
