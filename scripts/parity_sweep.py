@@ -11,6 +11,7 @@ Two deliberate pefile behaviours are normalised away before comparing:
 
 import sys
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pefile
@@ -198,29 +199,33 @@ def differences(ours, reference):
     return [key for key in ours_summary if ours_summary[key] != theirs_summary[key]]
 
 
+def check(path):
+    """The file's outcome, plus (kind, example) pairs to report under that kind."""
+    try:
+        reference = pefile.PE(str(path), fast_load=True)
+        reference.parse_data_directories(directories=DIRECTORIES)
+    except Exception:
+        return "skipped (pefile failed)", []
+    try:
+        ours = peoxide.PE(str(path))
+    except peoxide.PEFormatError as error:
+        return "peoxide failed", [("peoxide failed", f"{path.name}: {error}")]
+    differing = differences(ours, reference)
+    return "mismatch" if differing else "match", [(f"{k} differs", path.name) for k in differing]
+
+
 def main(folder):
     files = sorted(
         p for p in Path(folder).iterdir() if p.suffix.lower() in {".dll", ".exe", ".sys"}
     )
     outcomes = Counter()
     examples = {}
-    for path in files:
-        try:
-            reference = pefile.PE(str(path), fast_load=True)
-            reference.parse_data_directories(directories=DIRECTORIES)
-        except Exception:
-            outcomes["skipped (pefile failed)"] += 1
-            continue
-        try:
-            ours = peoxide.PE(str(path))
-        except peoxide.PEFormatError as error:
-            outcomes["peoxide failed"] += 1
-            examples.setdefault("peoxide failed", []).append(f"{path.name}: {error}")
-            continue
-        differing = differences(ours, reference)
-        outcomes["mismatch" if differing else "match"] += 1
-        for key in differing:
-            examples.setdefault(f"{key} differs", []).append(path.name)
+    # pefile is pure Python, so threads would serialise on the GIL; processes run it in parallel.
+    with ProcessPoolExecutor() as pool:
+        for outcome, found in pool.map(check, files, chunksize=16):
+            outcomes[outcome] += 1
+            for kind, example in found:
+                examples.setdefault(kind, []).append(example)
 
     print(f"{len(files)} files: {dict(outcomes)}")
     for kind, names in examples.items():
