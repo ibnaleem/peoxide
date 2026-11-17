@@ -34,7 +34,7 @@ jobs:
         run: cargo test
       - name: Python tests (parity with pefile, malformed input)
         run: |
-          pip install . pefile pytest
+          pip install . pefile==2024.8.26 pytest
           pytest -q tests
 
   test-linux:
