@@ -18,6 +18,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR cancels its still-running checks.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Hand-added (not maturin-generated): keep it if CI.yml is regenerated.
   # Windows runner because peoxide-core tests read C:\Windows\System32\kernel32.dll.
@@ -44,7 +49,9 @@ jobs:
       - name: Test on the synthetic fixtures
         run: cargo test -p peoxide-core
 
+  # Wheel jobs run only on tags and manual runs; PRs run lint-test and test-linux.
   linux:
+    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -52,15 +59,7 @@ jobs:
           - runner: ubuntu-22.04
             target: x86_64
           - runner: ubuntu-22.04
-            target: x86
-          - runner: ubuntu-22.04
             target: aarch64
-          - runner: ubuntu-22.04
-            target: armv7
-          - runner: ubuntu-22.04
-            target: s390x
-          - runner: ubuntu-22.04
-            target: ppc64le
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -80,18 +79,13 @@ jobs:
           path: dist
 
   musllinux:
+    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
         platform:
           - runner: ubuntu-22.04
             target: x86_64
-          - runner: ubuntu-22.04
-            target: x86
-          - runner: ubuntu-22.04
-            target: aarch64
-          - runner: ubuntu-22.04
-            target: armv7
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -111,6 +105,7 @@ jobs:
           path: dist
 
   windows:
+    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -118,12 +113,6 @@ jobs:
           - runner: windows-latest
             target: x64
             python_arch: x64
-          - runner: windows-latest
-            target: x86
-            python_arch: x86
-          - runner: windows-11-arm
-            target: aarch64
-            python_arch: arm64
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -143,6 +132,7 @@ jobs:
           path: dist
 
   macos:
+    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
@@ -167,6 +157,7 @@ jobs:
           path: dist
 
   sdist:
+    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
