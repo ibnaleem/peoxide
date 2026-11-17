@@ -69,6 +69,12 @@ fn exercise(pe: &Pe, data: &[u8]) {
     let _ = (pe.imphash_input(), pe.exphash_input());
     let _ = pe.parse_relocations(data);
     let _ = pe.checksum(data);
+    let rva = i64::from(pe.headers.optional_header.address_of_entry_point);
+    let _ = (
+        pe.uint_at_rva(data, rva, 8),
+        pe.string_at_rva(data, rva, i64::MAX),
+    );
+    let _ = peoxide_core::uint_at_offset(data, usize::MAX, 8);
     if let Some(offset) = pe.overlay_offset() {
         let _ = &data[offset..];
     }

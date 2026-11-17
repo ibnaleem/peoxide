@@ -12,7 +12,7 @@ pub use reloc::{Relocation, RelocationBlock};
 pub use resource::{ResourceChild, ResourceData, ResourceDirectory, ResourceEntry};
 mod rich;
 mod version;
-pub use address::{SectionLayout, clamp, entropy};
+pub use address::{SectionLayout, clamp, entropy, uint_at_offset};
 pub use goblin::error::Error;
 pub use goblin::pe::data_directories::DataDirectory;
 pub use goblin::pe::section_table::SectionTable as Section;

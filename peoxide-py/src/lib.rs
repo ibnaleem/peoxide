@@ -1316,20 +1316,7 @@ impl PE {
         };
         let max_length = max_length.map_or(Ok(MAX_STRING_LENGTH), saturating_i64)?;
         let file = self.data.as_bytes(py);
-        let string = no_panic(|| {
-            let range = match self.pe.section_by_rva(rva) {
-                Some(i) => self.pe.layouts[i].data_range(
-                    &self.pe.sections[i],
-                    Some(rva),
-                    Some(max_length),
-                    false,
-                ),
-                None => (rva, rva.saturating_add(max_length)),
-            };
-            let bytes = &file[peoxide_core::clamp(range, file.len())];
-            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-            &bytes[..end]
-        })?;
+        let string = no_panic(|| self.pe.string_at_rva(file, rva, max_length))?;
         Ok(Some(PyBytes::new(py, string)))
     }
 
@@ -1372,10 +1359,7 @@ impl PE {
         if rva < 0 {
             return Ok(None);
         }
-        no_panic(|| {
-            let range = self.pe.data_range(rva, Some(size as i64))?;
-            little_endian(&file[range], size)
-        })
+        no_panic(|| self.pe.uint_at_rva(file, rva, size))
     }
 
     /// `None` for a negative offset. pefile would count that from the end of the file.
@@ -1384,8 +1368,7 @@ impl PE {
         let Ok(start) = usize::try_from(saturating_i64(offset)?) else {
             return Ok(None);
         };
-        let bytes = start.checked_add(size).and_then(|end| file.get(start..end));
-        Ok(bytes.and_then(|bytes| little_endian(bytes, size)))
+        Ok(peoxide_core::uint_at_offset(file, start, size))
     }
 }
 
@@ -1399,16 +1382,6 @@ fn saturating_i64(value: &Bound<'_, PyAny>) -> PyResult<i64> {
         }
         other => other,
     }
-}
-
-/// `bytes` as a little-endian integer, or `None` when fewer than `size` bytes could be read.
-fn little_endian(bytes: &[u8], size: usize) -> Option<u64> {
-    (bytes.len() == size).then(|| {
-        bytes
-            .iter()
-            .rev()
-            .fold(0, |value, &byte| (value << 8) | u64::from(byte))
-    })
 }
 
 #[pymodule]
