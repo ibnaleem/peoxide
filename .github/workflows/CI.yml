@@ -38,6 +38,10 @@ jobs:
         run: |
           pip install . pefile==2024.8.26 pytest
           pytest -q tests
+      - name: Type stubs match the module
+        run: |
+          pip install mypy==2.4.1
+          python -m mypy.stubtest peoxide --allowlist stubtest_allowlist.txt
 
   test-linux:
     runs-on: ubuntu-22.04
