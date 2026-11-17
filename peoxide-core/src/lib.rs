@@ -1,9 +1,9 @@
 mod address;
 mod debug;
-mod delay;
 pub use debug::{DebugDirectory, DebugEntry};
 mod headers;
 mod imphash;
+mod imports;
 mod ordinals;
 mod reloc;
 mod resource;
@@ -23,7 +23,7 @@ pub use version::{BlockHeader, FileInfo, FixedFileInfo, StringTable, Var, Versio
 use goblin::container::Container;
 use goblin::pe::export::{ExportAddressTableEntry, ExportData};
 use goblin::pe::header::{Header, SIZEOF_COFF_HEADER, SIZEOF_PE_MAGIC};
-use goblin::pe::import::{ImportData, SyntheticImportLookupTableEntry};
+use goblin::pe::import::SIZEOF_IMPORT_DIRECTORY_ENTRY;
 use goblin::pe::optional_header::{MAGIC_32, MAGIC_64};
 use goblin::pe::options::ParseOptions;
 use goblin::pe::{characteristic, subsystem};
@@ -119,7 +119,6 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
     let tables = Tables::read(data, &header, &opts)?;
     let headers = headers::from_goblin(&header)?;
     let optional_header_offset = headers.dos_header.e_lfanew as usize + 24;
-    let imports = imports(&tables, headers.optional_header.image_base);
     let exports = exports(data, &tables, headers.optional_header.file_alignment, &opts);
     let mut sections = tables.sections;
     // pefile orders sections by VirtualAddress, not by section-table position.
@@ -130,7 +129,7 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
         file_size: data.len(),
         headers,
         sections,
-        imports,
+        imports: Vec::new(),
         delay_imports: Vec::new(),
         exports,
         debug: Vec::new(),
@@ -139,7 +138,7 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
         version: Version::default(),
     };
     // These directories are read through RVAs, which need the section layouts above.
-    pe.delay_imports = pe.parse_delay_imports(data);
+    (pe.imports, pe.delay_imports) = pe.parse_import_directories(data);
     pe.debug = pe.parse_debug_directory(data);
     pe.resources = pe.parse_resources(data);
     pe.version = pe.parse_version(data);
@@ -154,13 +153,12 @@ fn iat_slot_address(image_base: u64, iat_rva: u64, index: usize, thunk_size: usi
 }
 
 /// The tables peoxide takes from goblin. `goblin::pe::PE::parse` reads these and then also
-/// resolves every import and export into lists of its own and parses the debug, exception,
-/// relocation, load-config and CLR directories. peoxide rebuilds or reparses all of that, so
-/// it asks goblin for the raw tables only.
+/// parses the import table, resolves every export into a list of its own and parses the
+/// debug, exception, relocation, load-config and CLR directories. peoxide rebuilds or
+/// reparses all of that, so it asks goblin for the raw tables only.
 struct Tables<'a> {
     sections: Vec<Section>,
     is_64: bool,
-    import_data: Option<ImportData<'a>>,
     export_data: Option<ExportData<'a>>,
 }
 
@@ -175,7 +173,6 @@ impl<'a> Tables<'a> {
         let mut tables = Tables {
             sections: header.coff_header.sections(data, sections_offset)?,
             is_64: false,
-            import_data: None,
             export_data: None,
         };
         let Some(optional_header) = &header.optional_header else {
@@ -196,58 +193,46 @@ impl<'a> Tables<'a> {
                 ExportData::parse_with_opts(data, table, &tables.sections, alignment, opts).ok();
         }
         if let Some(&table) = directories.get_import_table() {
-            let sections = &tables.sections;
-            tables.import_data = Some(if tables.is_64 {
-                ImportData::parse_with_opts::<u64>(data, table, sections, alignment, opts)?
-            } else {
-                ImportData::parse_with_opts::<u32>(data, table, sections, alignment, opts)?
-            });
+            check_import_directory(data, table, &tables.sections, alignment, opts)?;
         }
         Ok(tables)
     }
 }
 
-fn imports(tables: &Tables, image_base: u64) -> Vec<ImportDll> {
-    let Some(import_data) = &tables.import_data else {
-        return Vec::new();
-    };
-    let thunk_size = if tables.is_64 { 8 } else { 4 };
-    import_data
-        .import_data
-        .iter()
-        .map(|entry| {
-            let iat_rva = entry.import_directory_entry.import_address_table_rva as u64;
-            let imports = entry
-                .import_lookup_table
-                .iter()
-                .flatten()
-                .enumerate()
-                .map(|(i, lookup)| {
-                    let address = iat_slot_address(image_base, iat_rva, i, thunk_size);
-                    match lookup {
-                        SyntheticImportLookupTableEntry::OrdinalNumber(ordinal) => ImportSymbol {
-                            name: None,
-                            hint: None,
-                            ordinal: Some(*ordinal),
-                            address,
-                        },
-                        SyntheticImportLookupTableEntry::HintNameTableRVA((_, hint_name)) => {
-                            ImportSymbol {
-                                name: Some(hint_name.name.as_bytes().to_vec()),
-                                hint: Some(hint_name.hint),
-                                ordinal: None,
-                                address,
-                            }
-                        }
-                    }
-                })
-                .collect();
-            ImportDll {
-                dll: entry.name.as_bytes().to_vec(),
-                imports,
-            }
-        })
-        .collect()
+/// goblin's checks on the import directory, without its read of every thunk table: the
+/// directory must map into the file, and so must each descriptor up to the last one.
+fn check_import_directory(
+    data: &[u8],
+    table: DataDirectory,
+    sections: &[Section],
+    file_alignment: u32,
+    opts: &ParseOptions,
+) -> Result<(), Error> {
+    let rva = table.virtual_address as usize;
+    let mut offset = goblin::pe::utils::find_offset(rva, sections, file_alignment, opts)
+        .ok_or_else(|| {
+            Error::Malformed(format!(
+                "Cannot map import_directory_table_rva {rva:#x} into offset"
+            ))
+        })?;
+    loop {
+        let end = offset.checked_add(SIZEOF_IMPORT_DIRECTORY_ENTRY);
+        let Some(entry) = end.and_then(|end| data.get(offset..end)) else {
+            return Err(Error::Malformed(format!(
+                "Import directory entry at offset {offset:#x} extends beyond file bounds \
+                 (file size: {:#x})",
+                data.len()
+            )));
+        };
+        let field = |at: usize| {
+            u32::from_le_bytes([entry[at], entry[at + 1], entry[at + 2], entry[at + 3]])
+        };
+        // goblin stops at a null entry or one without a name or an address table.
+        if field(12) == 0 || field(16) == 0 {
+            return Ok(());
+        }
+        offset += SIZEOF_IMPORT_DIRECTORY_ENTRY;
+    }
 }
 
 /// Named exports in name-table order, then ordinal-only exports, matching pefile.
@@ -439,7 +424,9 @@ mod tests {
 
     #[test]
     fn crafted_fixtures_parse_without_panicking() {
-        let crafted: [&[u8]; 5] = [
+        let crafted: [&[u8]; 7] = [
+            include_bytes!("../../tests/fixtures/crafted/shared_thunks.dll"),
+            include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll"),
             include_bytes!("../../tests/fixtures/crafted/huge_count.dll"),
             include_bytes!("../../tests/fixtures/crafted/self_reference.dll"),
             include_bytes!("../../tests/fixtures/crafted/top_image_base.dll"),
@@ -452,5 +439,30 @@ mod tests {
                 let _ = pe.parse_relocations(data);
             }
         }
+    }
+
+    fn import_counts(dlls: &[ImportDll]) -> Vec<usize> {
+        dlls.iter().map(|dll| dll.imports.len()).collect()
+    }
+
+    #[test]
+    fn imports_stop_at_pefiles_symbol_cap() {
+        // 2,048 descriptors share one table of 1,000 imports. Read in full, that is 2,048,000.
+        let data = include_bytes!("../../tests/fixtures/crafted/shared_thunks.dll");
+        let start = std::time::Instant::now();
+        let pe = parse(data).unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_millis(500));
+        // pefile's counts: the cap cuts the fifth lookup table short.
+        assert_eq!(import_counts(&pe.imports), [1000, 1000, 1000, 1000, 185]);
+        assert!(pe.delay_imports.is_empty());
+    }
+
+    #[test]
+    fn delay_imports_drop_the_descriptor_that_passes_the_cap() {
+        let data = include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll");
+        let pe = parse(data).unwrap();
+        assert_eq!(import_counts(&pe.imports), [1]);
+        // pefile's counts: the fifth descriptor passes the cap and is left out.
+        assert_eq!(import_counts(&pe.delay_imports), [1000; 4]);
     }
 }
