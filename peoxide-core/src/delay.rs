@@ -1,7 +1,7 @@
 //! The delay-load import table, which goblin does not parse. Follows pefile's
 //! `parse_delay_import_directory`.
 
-use crate::imports::is_valid_dos_filename;
+use crate::imports::{MAX_IMPORT_SYMBOLS, is_valid_dos_filename};
 use crate::{ImportDll, Pe};
 
 const DELAY_IMPORT_DIRECTORY: usize = 13;
@@ -31,7 +31,12 @@ impl Pe {
         })
     }
 
-    pub(crate) fn parse_delay_imports(&self, data: &[u8]) -> Vec<ImportDll> {
+    /// `symbols_read` carries on from the import directory, as pefile's counter does.
+    pub(crate) fn parse_delay_imports(
+        &self,
+        data: &[u8],
+        symbols_read: &mut u32,
+    ) -> Vec<ImportDll> {
         let Some(directory) = self
             .headers
             .optional_header
@@ -70,11 +75,22 @@ impl Pe {
                 break;
             }
             let symbols = self
-                .import_symbols(data, descriptor.int, descriptor.iat, max_length, vas)
+                .import_symbols(
+                    data,
+                    descriptor.int,
+                    descriptor.iat,
+                    max_length,
+                    vas,
+                    symbols_read,
+                )
                 .unwrap_or_default();
             if symbols.is_empty() {
                 empty_descriptors += 1;
                 continue;
+            }
+            // Unlike the import directory, pefile drops the descriptor that passed the cap.
+            if *symbols_read > MAX_IMPORT_SYMBOLS {
+                break;
             }
             let dll = self.c_string_at(data, descriptor.name);
             let dll = if is_valid_dos_filename(&dll) {

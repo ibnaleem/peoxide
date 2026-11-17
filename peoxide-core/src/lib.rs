@@ -139,8 +139,9 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
         version: Version::default(),
     };
     // These directories are read through RVAs, which need the section layouts above.
-    pe.imports = pe.parse_imports(data);
-    pe.delay_imports = pe.parse_delay_imports(data);
+    let mut import_symbols_read = 0;
+    pe.imports = pe.parse_imports(data, &mut import_symbols_read);
+    pe.delay_imports = pe.parse_delay_imports(data, &mut import_symbols_read);
     pe.debug = pe.parse_debug_directory(data);
     pe.resources = pe.parse_resources(data);
     pe.version = pe.parse_version(data);

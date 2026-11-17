@@ -7,6 +7,9 @@
 
 use crate::{ImportDll, ImportSymbol, Pe};
 
+/// pefile's cap on thunk-table entries read per file, across imports and delay imports.
+/// Without it, many descriptors sharing one long table cost descriptors x entries.
+pub(crate) const MAX_IMPORT_SYMBOLS: u32 = 0x2000;
 const IMPORT_DIRECTORY: usize = 1;
 const IMPORT_DESCRIPTOR_SIZE: i64 = 20;
 const MAX_EMPTY_DESCRIPTORS: u32 = 5;
@@ -88,12 +91,24 @@ impl Pe {
         }
     }
 
-    /// pefile's `get_import_table`.
-    fn thunk_table(&self, data: &[u8], start: i64, max_length: i64, vas: bool) -> ThunkTable {
+    /// pefile's `get_import_table`. `symbols_read` counts every entry read in the file, the
+    /// terminator included, and the table stops short once it passes `MAX_IMPORT_SYMBOLS`.
+    fn thunk_table(
+        &self,
+        data: &[u8],
+        start: i64,
+        max_length: i64,
+        vas: bool,
+        symbols_read: &mut u32,
+    ) -> ThunkTable {
         let size = self.thunk_size();
         let mut entries = Vec::new();
         let mut rva = start;
         while rva != 0 && rva < start.saturating_add(max_length) {
+            if *symbols_read > MAX_IMPORT_SYMBOLS {
+                break;
+            }
+            *symbols_read += 1;
             let Some(raw) = self.uint_at(data, rva, size) else {
                 return ThunkTable::Unreadable;
             };
@@ -126,12 +141,16 @@ impl Pe {
         iat: i64,
         max_length: i64,
         vas: bool,
+        symbols_read: &mut u32,
     ) -> Option<Vec<ImportSymbol>> {
-        let entries = |rva| match self.thunk_table(data, rva, max_length, vas) {
+        let entries = |table| match table {
             ThunkTable::Entries(entries) if !entries.is_empty() => Some(entries),
             _ => None,
         };
-        let table = entries(int).or_else(|| entries(iat))?;
+        // pefile reads both tables, so both count towards the cap.
+        let lookup = self.thunk_table(data, int, max_length, vas, symbols_read);
+        let addresses = self.thunk_table(data, iat, max_length, vas, symbols_read);
+        let table = entries(lookup).or_else(|| entries(addresses))?;
         let address_mask = self.ordinal_flag() - 1;
         let image_base = self.headers.optional_header.image_base;
         let mut symbols = Vec::new();
@@ -165,7 +184,7 @@ impl Pe {
     }
 
     /// pefile's `parse_import_directory`.
-    pub(crate) fn parse_imports(&self, data: &[u8]) -> Vec<ImportDll> {
+    pub(crate) fn parse_imports(&self, data: &[u8], symbols_read: &mut u32) -> Vec<ImportDll> {
         let Some(directory) = self
             .headers
             .optional_header
@@ -200,7 +219,7 @@ impl Pe {
             .min(self.file_size as i64);
             // pefile reads the tables before it checks the error count.
             let symbols = self
-                .import_symbols(data, int, iat, max_length, false)
+                .import_symbols(data, int, iat, max_length, false, symbols_read)
                 .unwrap_or_default();
             if empty_descriptors > MAX_EMPTY_DESCRIPTORS {
                 break;
