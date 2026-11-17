@@ -43,7 +43,13 @@ which is where the speedup comes from.
 
 ## Install
 
-peoxide is not on PyPI yet. Build it from source with a Rust toolchain and [uv](https://docs.astral.sh/uv/):
+```sh
+pip install peoxide
+```
+
+The current release, 0.0.1, ships one wheel, for CPython 3.14 on 64-bit Windows. On any other platform or Python version pip builds from the source distribution, which needs a [Rust toolchain](https://rustup.rs/).
+
+To build from a clone instead, use a Rust toolchain and [uv](https://docs.astral.sh/uv/):
 
 ```sh
 git clone https://github.com/ibnaleem/peoxide
