@@ -2,6 +2,11 @@ mod address;
 mod checksum;
 mod debug;
 pub use debug::{DebugDirectory, DebugEntry};
+mod exception;
+pub use exception::{
+    AllocLarge, Epilog, Exceptions, RuntimeFunction, Trailer, UNW_FLAG_CHAININFO,
+    UNW_FLAG_EHANDLER, UNW_FLAG_UHANDLER, UnwindBody, UnwindCode, UnwindInfo, UnwindOp,
+};
 mod headers;
 mod imphash;
 mod imports;

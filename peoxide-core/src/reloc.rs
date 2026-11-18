@@ -69,7 +69,7 @@ fn entries(bytes: &[u8], base: u32, seen: &mut Seen) -> Vec<Relocation> {
 }
 
 impl Pe {
-    fn read<'a>(&self, data: &'a [u8], rva: i64, length: i64) -> Option<&'a [u8]> {
+    pub(crate) fn read<'a>(&self, data: &'a [u8], rva: i64, length: i64) -> Option<&'a [u8]> {
         data.get(self.data_range(rva, Some(length))?)
     }
 
