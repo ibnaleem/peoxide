@@ -5,7 +5,7 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyList, PyTuple};
 
 use crate::directories::{
-    BaseRelocationData, DebugData, ExportDirData, ImportDescData, RichHeader,
+    BaseRelocationData, DebugData, ExportDirData, ImportDescData, RichHeader, TlsData,
 };
 use crate::flags::{DLL_CHARACTERISTICS_FLAGS, IMAGE_FILE_FLAGS, SECTION_FLAGS, with_flags};
 use crate::headers::{DosHeader, FileHeader, NtHeaders, OptionalHeader};
@@ -72,6 +72,9 @@ pub(crate) struct PE {
     DIRECTORY_ENTRY_DEBUG: Py<PyList>,
     #[pyo3(get)]
     RICH_HEADER: Option<Py<RichHeader>>,
+    /// `None` where pefile leaves the attribute undefined.
+    #[pyo3(get)]
+    DIRECTORY_ENTRY_TLS: Option<Py<TlsData>>,
     relocations: PyOnceLock<Py<PyList>>,
     resources: PyOnceLock<Option<Py<ResourceDirData>>>,
     version: VersionLists,
@@ -152,6 +155,11 @@ impl PE {
                 .rich_header
                 .as_ref()
                 .map(|r| Py::new(py, RichHeader::new(py, r)?))
+                .transpose()?,
+            DIRECTORY_ENTRY_TLS: pe
+                .tls
+                .as_ref()
+                .map(|t| Py::new(py, TlsData::new(py, t)?))
                 .transpose()?,
             relocations: PyOnceLock::new(),
             resources: PyOnceLock::new(),
