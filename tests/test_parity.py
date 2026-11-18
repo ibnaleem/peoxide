@@ -415,6 +415,100 @@ def test_corpus_has_relocations():
     assert any(peoxide.PE(str(p)).DIRECTORY_ENTRY_BASERELOC for p in CORPUS)
 
 
+MISSING = "missing"
+UNWIND_FIELDS = [
+    "Version",
+    "Flags",
+    "SizeOfProlog",
+    "CountOfCodes",
+    "FrameRegister",
+    "FrameOffset",
+    "UNW_FLAG_EHANDLER",
+    "UNW_FLAG_UHANDLER",
+    "UNW_FLAG_CHAININFO",
+]
+# pefile sets these only on some records.
+OPTIONAL_UNWIND_FIELDS = ["ExceptionHandler", "FunctionEntry", "SizeOfEpilog"]
+CODE_METHODS = ["get_offset", "get_alloc_size"]
+
+
+def unwind_code(code, reference):
+    """A code's class, text, methods and every `.struct` field pefile's matching code has."""
+    names = [name for names in reference.struct.__keys_ext__ for name in names]
+    return (
+        type(code).__name__,
+        str(code),
+        code.is_valid(),
+        [getattr(code, m)() if hasattr(code, m) else MISSING for m in CODE_METHODS],
+        [getattr(code.struct, name, MISSING) for name in names],
+    )
+
+
+def exception_entries(pe, reference):
+    """Every entry, with sharing and chaining as indexes into the list. Field names come from
+    `reference`, the pefile.PE of the same file."""
+    entries = getattr(pe, "DIRECTORY_ENTRY_EXCEPTION", [])
+    references = getattr(reference, "DIRECTORY_ENTRY_EXCEPTION", [])
+    index = {id(e): i for i, e in enumerate(entries)}
+    first_user = {}
+    rows = []
+    for i, (entry, ref) in enumerate(zip(entries, references)):
+        info = entry.unwindinfo
+        row = [entry.struct.BeginAddress, entry.struct.EndAddress, entry.struct.UnwindData]
+        if info is not None:
+            chained = info.get_chained_function_entry()
+            codes = getattr(info, "UnwindCodes", None)
+            row += [
+                first_user.setdefault(id(info), i),
+                [getattr(info, f) for f in UNWIND_FIELDS],
+                [getattr(info, f, MISSING) for f in OPTIONAL_UNWIND_FIELDS],
+                # A KeyError here means the chained entry is not the list's own object.
+                None if chained is None else index[id(chained)],
+                None
+                if codes is None
+                else [len(codes)]
+                + [unwind_code(c, r) for c, r in zip(codes, ref.unwindinfo.UnwindCodes)],
+            ]
+        rows.append(row)
+    return len(entries), rows
+
+
+def test_exceptions(pair):
+    ours, theirs = pair
+    assert exception_entries(ours, theirs) == exception_entries(theirs, theirs)
+
+
+def test_corpus_has_exception_entries():
+    pes = [peoxide.PE(str(p)) for p in CORPUS]
+    entries = [e for pe in pes for e in pe.DIRECTORY_ENTRY_EXCEPTION]
+    assert entries
+    assert any(hasattr(e.unwindinfo, "FunctionEntry") for e in entries)
+    assert any(e.unwindinfo is None for e in entries)
+    kinds = {type(c).__name__ for e in entries if e.unwindinfo for c in e.unwindinfo.UnwindCodes}
+    assert len(kinds) == 10, kinds
+
+
+def test_x86_files_have_no_exception_entries():
+    x86 = [p for p in CORPUS if pefile.PE(str(p), fast_load=True).FILE_HEADER.Machine == 0x14C]
+    assert x86
+    assert all(peoxide.PE(str(p)).DIRECTORY_ENTRY_EXCEPTION == [] for p in x86)
+
+
+def test_crafted_exceptions_match_pefile():
+    path = str(Path(__file__).parent / "fixtures" / "crafted" / "exceptions.dll")
+    ours, theirs = peoxide.PE(path), pefile.PE(path)
+    assert exception_entries(ours, theirs) == exception_entries(theirs, theirs)
+    assert len(ours.DIRECTORY_ENTRY_EXCEPTION) == 5
+
+
+def test_entries_share_and_chain_the_same_objects():
+    pe = peoxide.PE(str(Path(__file__).parent / "fixtures" / "exceptions64.dll"))
+    entries = pe.DIRECTORY_ENTRY_EXCEPTION
+    assert entries is pe.DIRECTORY_ENTRY_EXCEPTION
+    assert entries[0].unwindinfo is entries[1].unwindinfo
+    assert entries[8].unwindinfo.get_chained_function_entry() is entries[7]
+
+
 RESOURCE_DIR_FIELDS = ["Characteristics", "TimeDateStamp", "MajorVersion", "MinorVersion", "NumberOfNamedEntries", "NumberOfIdEntries"]
 RESOURCE_ENTRY_FIELDS = ["Name", "OffsetToData", "NameOffset", "Id", "DataIsDirectory", "OffsetToDirectory"]
 RESOURCE_DATA_FIELDS = ["OffsetToData", "Size", "CodePage", "Reserved"]
