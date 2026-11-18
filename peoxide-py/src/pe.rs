@@ -1,3 +1,4 @@
+use pyo3::IntoPyObjectExt;
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyOSError, PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
@@ -162,13 +163,17 @@ impl PE {
     }
 
     /// Bytes at an RVA, read from whichever section holds it (or the headers, or the raw file).
-    #[pyo3(signature = (rva=0, length=None))]
+    #[pyo3(
+        signature = (rva=SaturatingI64(0), length=None),
+        text_signature = "($self, rva=0, length=None)"
+    )]
     fn get_data<'py>(
         &self,
         py: Python<'py>,
-        rva: i64,
-        length: Option<i64>,
+        rva: SaturatingI64,
+        length: Option<SaturatingI64>,
     ) -> PyResult<Bound<'py, PyBytes>> {
+        let (rva, length) = (rva.0, length.map(|length| length.0));
         let file = self.data.as_bytes(py);
         let data = no_panic(|| self.pe.data_range(rva, length).map(|range| &file[range]))?
             .ok_or_else(|| {
@@ -177,23 +182,42 @@ impl PE {
         Ok(PyBytes::new(py, data))
     }
 
-    fn get_offset_from_rva(&self, rva: i64) -> PyResult<i64> {
-        no_panic(|| self.pe.offset_from_rva(rva))?.ok_or_else(|| {
-            PEFormatError::new_err(format!("data at RVA 0x{rva:x} can't be fetched"))
-        })
+    /// An RVA outside every section comes back unchanged, as in pefile, even one below the
+    /// `i64` range, which `saturating_i64` pins to `i64::MIN`.
+    fn get_offset_from_rva<'py>(&self, rva: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let value = saturating_i64(rva)?;
+        match no_panic(|| self.pe.offset_from_rva(value))? {
+            Some(i64::MIN) => Ok(rva.clone()),
+            Some(offset) => offset.into_bound_py_any(rva.py()),
+            None => Err(PEFormatError::new_err(format!(
+                "data at RVA 0x{} can't be fetched",
+                rva.call_method1("__format__", ("x",))?
+            ))),
+        }
     }
 
-    /// `None` when the offset is past the start of the first section but in none of them.
-    fn get_rva_from_offset(&self, offset: i64) -> PyResult<Option<i64>> {
-        no_panic(|| self.pe.rva_from_offset(offset))
+    /// `None` when the offset is past the start of the first section but in none of them. An
+    /// offset before every section (or any offset, with no sections) comes back unchanged, as
+    /// for `get_offset_from_rva`.
+    fn get_rva_from_offset<'py>(
+        &self,
+        offset: &Bound<'py, PyAny>,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let value = saturating_i64(offset)?;
+        match no_panic(|| self.pe.rva_from_offset(value))? {
+            Some(i64::MIN | i64::MAX) => Ok(Some(offset.clone())),
+            rva => rva
+                .map(|rva| rva.into_bound_py_any(offset.py()))
+                .transpose(),
+        }
     }
 
     fn get_section_by_rva<'py>(
         &self,
         py: Python<'py>,
-        rva: i64,
+        rva: SaturatingI64,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
-        let index = no_panic(|| self.pe.section_by_rva(rva))?;
+        let index = no_panic(|| self.pe.section_by_rva(rva.0))?;
         index
             .map(|i| self.sections.bind(py).get_item(i))
             .transpose()
@@ -202,9 +226,9 @@ impl PE {
     fn get_section_by_offset<'py>(
         &self,
         py: Python<'py>,
-        offset: i64,
+        offset: SaturatingI64,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
-        let index = no_panic(|| self.pe.section_by_offset(offset))?;
+        let index = no_panic(|| self.pe.section_by_offset(offset.0))?;
         index
             .map(|i| self.sections.bind(py).get_item(i))
             .transpose()
@@ -468,5 +492,16 @@ fn saturating_i64(value: &Bound<'_, PyAny>) -> PyResult<i64> {
             Ok(if value.lt(0)? { i64::MIN } else { i64::MAX })
         }
         other => other,
+    }
+}
+
+/// An argument converted by `saturating_i64`.
+pub(crate) struct SaturatingI64(pub(crate) i64);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for SaturatingI64 {
+    type Error = PyErr;
+
+    fn extract(value: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        saturating_i64(&value).map(SaturatingI64)
     }
 }
