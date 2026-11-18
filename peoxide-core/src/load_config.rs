@@ -410,3 +410,145 @@ impl Pe {
         done(func_relocs, bdd_relocs)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    const PE64: &[u8] = include_bytes!("../../tests/fixtures/load_config64.dll");
+    const PE32: &[u8] = include_bytes!("../../tests/fixtures/load_config32.dll");
+
+    fn load_config(data: &[u8]) -> Option<LoadConfig> {
+        parse(data).unwrap().parse_load_config(data)
+    }
+
+    fn field(config: &LoadConfig, name: &str) -> Option<u64> {
+        config.fields.iter().find(|f| f.0 == name).map(|f| f.1)
+    }
+
+    fn symbols(config: &LoadConfig) -> Vec<u64> {
+        let relocations = config.dynamic_relocations.as_ref().unwrap();
+        relocations.iter().map(|d| d.symbol).collect()
+    }
+
+    #[test]
+    fn truncates_at_the_field_where_the_declared_size_ends() {
+        assert_eq!(field_count(&FIELDS_64, Some(72)), 13);
+        assert_eq!(field_count(&FIELDS_64, Some(320)), 52);
+        assert_eq!(field_count(&FIELDS_64, Some(78)), 15);
+        assert_eq!(field_count(&FIELDS_64, Some(77)), 52);
+        assert_eq!(field_count(&FIELDS_64, Some(1000)), 52);
+        assert_eq!(field_count(&FIELDS_32, Some(192)), 52);
+        assert_eq!(field_count(&FIELDS_32, None), 52);
+    }
+
+    #[test]
+    fn reads_every_dynamic_relocation_kind_in_pe32_plus() {
+        let config = load_config(PE64).unwrap();
+        assert_eq!(config.fields.len(), 52);
+        assert_eq!(field(&config, "Size"), Some(320));
+        // Symbol 1 is skipped, as pefile does.
+        assert_eq!(symbols(&config), [3, 4, 5, 6, 7, 0xFFFFF78000000000]);
+        let relocations = config.dynamic_relocations.as_ref().unwrap();
+        let DynamicRelocationKind::Relocations(blocks) = &relocations[0].kind else {
+            panic!("symbol 3 holds relocation blocks");
+        };
+        assert_eq!(blocks[0].format, RelocationFormat::ImportControlTransfer);
+        assert_eq!(blocks[0].entries[0].data, 0x10 | 1 << 12 | 5 << 13);
+        // Symbol 5's third entry repeats the first's page offset.
+        let DynamicRelocationKind::Relocations(blocks) = &relocations[2].kind else {
+            panic!("symbol 5 holds relocation blocks");
+        };
+        assert_eq!(blocks[0].entries.len(), 2);
+        let DynamicRelocationKind::FunctionOverride {
+            func_relocs,
+            bdd_relocs,
+        } = &relocations[4].kind
+        else {
+            panic!("symbol 7 is a function override");
+        };
+        assert_eq!(func_relocs[0].override_rvas, [0x1004, 0x1008]);
+        assert_eq!(func_relocs[0].relocations[0].entries[0].reloc_type(), 0xA);
+        let bdd: Vec<_> = bdd_relocs
+            .iter()
+            .map(|b| (b.left, b.right, b.value))
+            .collect();
+        assert_eq!(bdd, [(1, 2, 3), (4, 5, 6)]);
+    }
+
+    #[test]
+    fn reads_32_bit_dynamic_relocation_headers_in_pe32() {
+        let config = load_config(PE32).unwrap();
+        assert_eq!(field(&config, "Size"), Some(192));
+        assert_eq!(symbols(&config), [3, 4, 5, 6, 7, 0x80000000]);
+    }
+
+    fn crafted(name: &str) -> Vec<u8> {
+        let path = format!(
+            "{}/../tests/fixtures/crafted/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::read(path).unwrap()
+    }
+
+    #[test]
+    fn a_short_size_leaves_out_the_later_fields() {
+        let config = load_config(&crafted("load_config_short_size.dll")).unwrap();
+        assert_eq!(config.fields.len(), 13);
+        assert_eq!(field(&config, "GuardFlags"), None);
+        assert!(config.dynamic_relocations.is_none());
+    }
+
+    #[test]
+    fn an_odd_size_reads_the_whole_structure() {
+        let config = load_config(&crafted("load_config_odd_size.dll")).unwrap();
+        assert_eq!(config.fields.len(), 52);
+        // The table's section number is out of range.
+        assert!(config.dynamic_relocations.is_none());
+    }
+
+    #[test]
+    fn oversized_table_and_entry_sizes_stop_at_unreadable_data() {
+        let config = load_config(&crafted("load_config_long_table.dll")).unwrap();
+        assert_eq!(symbols(&config), [4, 6]);
+    }
+
+    #[test]
+    fn overlapping_function_overrides_stop_at_the_item_cap() {
+        let data = crafted("load_config_overlap.dll");
+        let start = std::time::Instant::now();
+        let config = load_config(&data).unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_millis(500));
+        let rvas: usize = config
+            .dynamic_relocations
+            .unwrap()
+            .iter()
+            .map(|d| match &d.kind {
+                DynamicRelocationKind::FunctionOverride { func_relocs, .. } => {
+                    func_relocs.iter().map(|f| f.override_rvas.len()).sum()
+                }
+                DynamicRelocationKind::Relocations(_) => 0,
+            })
+            .sum();
+        assert!(rvas > 0 && rvas < MAX_DYNAMIC_RELOCATION_ITEMS);
+    }
+
+    /// The PE32+ fixture with its load config data directory pointing at `rva`.
+    fn with_directory(rva: u32) -> Vec<u8> {
+        let mut data = PE64.to_vec();
+        let pe = parse(&data).unwrap();
+        let entry = pe.headers.dos_header.e_lfanew as usize + 24 + 112 + 8 * LOAD_CONFIG_DIRECTORY;
+        data[entry..entry + 4].copy_from_slice(&rva.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn an_absent_or_unreadable_directory_is_none() {
+        assert!(load_config(include_bytes!("../../tests/fixtures/sample64.dll")).is_none());
+        assert!(load_config(&with_directory(0)).is_none());
+        assert!(load_config(&with_directory(0x7FFF_FF00)).is_none());
+        // The last bytes of the file are too few for the structure.
+        assert!(load_config(&with_directory(PE64.len() as u32 - 8)).is_none());
+    }
+}
