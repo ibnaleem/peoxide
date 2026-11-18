@@ -18,6 +18,7 @@ SAMPLES = [
     WINDIR / "System32" / "user32.dll",
     FIXTURES / "sample64.dll",
     FIXTURES / "sample32.exe",
+    FIXTURES / "bound_imports.dll",
 ]
 
 
