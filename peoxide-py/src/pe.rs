@@ -9,6 +9,7 @@ use crate::directories::{
 };
 use crate::flags::{DLL_CHARACTERISTICS_FLAGS, IMAGE_FILE_FLAGS, SECTION_FLAGS, with_flags};
 use crate::headers::{DosHeader, FileHeader, NtHeaders, OptionalHeader};
+use crate::load_config::LoadConfigData;
 use crate::resource::ResourceDirData;
 use crate::section::Section;
 use crate::version::VersionLists;
@@ -74,6 +75,7 @@ pub(crate) struct PE {
     RICH_HEADER: Option<Py<RichHeader>>,
     relocations: PyOnceLock<Py<PyList>>,
     resources: PyOnceLock<Option<Py<ResourceDirData>>>,
+    load_config: PyOnceLock<Option<Py<LoadConfigData>>>,
     version: VersionLists,
     pe: peoxide_core::Pe,
     data: Py<PyBytes>,
@@ -155,6 +157,7 @@ impl PE {
                 .transpose()?,
             relocations: PyOnceLock::new(),
             resources: PyOnceLock::new(),
+            load_config: PyOnceLock::new(),
             version: VersionLists::new(py, &pe.version)?,
             pe,
             data: data.unbind(),
@@ -300,6 +303,20 @@ impl PE {
                 })?
             })
             .map(|r| r.as_ref().map(|r| r.clone_ref(py)))
+    }
+
+    /// The load config directory, or `None` when the file has none pefile can read.
+    /// Built on first access.
+    #[getter]
+    fn DIRECTORY_ENTRY_LOAD_CONFIG(&self, py: Python<'_>) -> PyResult<Option<Py<LoadConfigData>>> {
+        self.load_config
+            .get_or_try_init(py, || {
+                let load_config = no_panic(|| self.pe.parse_load_config(self.data.as_bytes(py)))?;
+                load_config
+                    .map(|l| Py::new(py, LoadConfigData::new(py, l)?))
+                    .transpose()
+            })
+            .map(|l| l.as_ref().map(|l| l.clone_ref(py)))
     }
 
     /// Missing, as in pefile, when the file has no readable version information.

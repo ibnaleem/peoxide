@@ -41,6 +41,7 @@ macro_rules! py_class {
 mod directories;
 mod flags;
 mod headers;
+mod load_config;
 mod pe;
 mod resource;
 mod section;
