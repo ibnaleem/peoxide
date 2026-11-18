@@ -18,6 +18,8 @@ SAMPLES = [
     WINDIR / "System32" / "user32.dll",
     FIXTURES / "sample64.dll",
     FIXTURES / "sample32.exe",
+    # Every unwind code layout, which the system DLLs above do not all have.
+    FIXTURES / "exceptions64.dll",
 ]
 
 
