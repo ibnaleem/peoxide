@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn crafted_fixtures_parse_without_panicking() {
-        let crafted: [&[u8]; 7] = [
+        let crafted: [&[u8]; 9] = [
             include_bytes!("../../tests/fixtures/crafted/shared_thunks.dll"),
             include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll"),
             include_bytes!("../../tests/fixtures/crafted/huge_count.dll"),
@@ -439,6 +439,8 @@ mod tests {
             include_bytes!("../../tests/fixtures/crafted/top_image_base.dll"),
             include_bytes!("../../tests/fixtures/crafted/signed_image_base.dll"),
             include_bytes!("../../tests/fixtures/crafted/long_relocations.dll"),
+            include_bytes!("../../tests/fixtures/crafted/tls_size_zero.dll"),
+            include_bytes!("../../tests/fixtures/crafted/tls_outside_sections.dll"),
         ];
         // Ok or Err are both fine; only a panic fails.
         for data in crafted {
