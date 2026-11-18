@@ -182,12 +182,12 @@ impl PE {
         Ok(PyBytes::new(py, data))
     }
 
-    /// An RVA outside every section comes back unchanged, as in pefile, even one below the
-    /// `i64` range, which `saturating_i64` pins to `i64::MIN`.
+    /// An RVA outside every section comes back unchanged, as in pefile. That returns the
+    /// argument itself, so a value beyond the `i64` range survives saturation.
     fn get_offset_from_rva<'py>(&self, rva: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let SaturatingI64(value) = rva.extract()?;
         match no_panic(|| self.pe.offset_from_rva(value))? {
-            Some(i64::MIN) => Ok(rva.clone()),
+            Some(offset) if offset == value => Ok(rva.clone()),
             Some(offset) => offset.into_bound_py_any(rva.py()),
             None => Err(PEFormatError::new_err(format!(
                 "data at RVA 0x{} can't be fetched",
@@ -205,7 +205,7 @@ impl PE {
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
         let SaturatingI64(value) = offset.extract()?;
         match no_panic(|| self.pe.rva_from_offset(value))? {
-            Some(i64::MIN | i64::MAX) => Ok(Some(offset.clone())),
+            Some(rva) if rva == value => Ok(Some(offset.clone())),
             rva => rva
                 .map(|rva| rva.into_bound_py_any(offset.py()))
                 .transpose(),
