@@ -5,6 +5,10 @@ pub use debug::{DebugDirectory, DebugEntry};
 mod headers;
 mod imphash;
 mod imports;
+mod load_config;
+pub use load_config::{
+    BddRelocation, DynamicRelocation, DynamicRelocationKind, FunctionOverride, LoadConfig,
+};
 mod ordinals;
 mod reloc;
 mod resource;
