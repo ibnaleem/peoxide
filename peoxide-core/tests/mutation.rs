@@ -8,12 +8,15 @@ use peoxide_core::{Pe, clamp, entropy, parse};
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 
-const FIXTURES: [&[u8]; 4] = [
+const FIXTURES: [&[u8]; 6] = [
     include_bytes!("../../tests/fixtures/sample64.dll"),
     include_bytes!("../../tests/fixtures/sample32.exe"),
     include_bytes!("../../tests/fixtures/driver.sys"),
     // The only seed with delay imports, and with import tables near pefile's symbol cap.
     include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll"),
+    // Every unwind code layout, then chain cycles, 255 codes and a truncated record.
+    include_bytes!("../../tests/fixtures/exceptions64.dll"),
+    include_bytes!("../../tests/fixtures/crafted/exceptions.dll"),
 ];
 /// Share of edits aimed at the headers, section table and data directories.
 const HOT_EDIT_SHARE: f64 = 0.7;
@@ -70,6 +73,17 @@ fn exercise(pe: &Pe, data: &[u8]) {
     let _ = (pe.is_dll(), pe.is_exe(), pe.is_driver());
     let _ = (pe.imphash_input(), pe.exphash_input());
     let _ = pe.parse_relocations(data);
+    let exceptions = pe.parse_exceptions(data);
+    for info in &exceptions.unwind_infos {
+        for code in info.body.iter().flat_map(|b| &b.codes) {
+            let _ = (
+                code.to_string(),
+                code.is_valid(),
+                code.offset(),
+                code.alloc_size(),
+            );
+        }
+    }
     let _ = pe.checksum(data);
     let rva = i64::from(pe.headers.optional_header.address_of_entry_point);
     let _ = (

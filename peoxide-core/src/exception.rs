@@ -448,3 +448,204 @@ impl Pe {
         Some(exceptions)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse;
+
+    const VALID: &[u8] = include_bytes!("../../tests/fixtures/exceptions64.dll");
+    const CRAFTED: &[u8] = include_bytes!("../../tests/fixtures/crafted/exceptions.dll");
+
+    fn exceptions(data: &[u8]) -> Exceptions {
+        parse(data).unwrap().parse_exceptions(data)
+    }
+
+    fn info(e: &Exceptions, entry: usize) -> &UnwindInfo {
+        &e.unwind_infos[e.entries[entry].unwind_info.unwrap()]
+    }
+
+    fn body(e: &Exceptions, entry: usize) -> &UnwindBody {
+        info(e, entry).body.as_ref().unwrap()
+    }
+
+    fn strings(e: &Exceptions, entry: usize) -> Vec<String> {
+        body(e, entry).codes.iter().map(|c| c.to_string()).collect()
+    }
+
+    fn chained(e: &Exceptions, entry: usize) -> Option<usize> {
+        match body(e, entry).trailer {
+            Some(Trailer::FunctionEntry { chained, .. }) => chained,
+            _ => panic!("entry {entry} is not chained"),
+        }
+    }
+
+    /// `data` with the bytes at `rva` replaced.
+    fn patched(data: &[u8], rva: u32, bytes: &[u8]) -> Vec<u8> {
+        let offset = parse(data).unwrap().offset_from_rva(rva.into()).unwrap() as usize;
+        let mut data = data.to_vec();
+        data[offset..offset + bytes.len()].copy_from_slice(bytes);
+        data
+    }
+
+    fn unwind_data(entry: usize) -> u32 {
+        exceptions(VALID).entries[entry].unwind_data
+    }
+
+    #[test]
+    fn decodes_every_unwind_code_layout_as_pefile_prints_it() {
+        // pefile 2024.8.26's str() of each code in tests/fixtures/exceptions64.dll.
+        let e = exceptions(VALID);
+        assert_eq!(e.entries.len(), 11);
+        assert_eq!(
+            strings(&e, 0),
+            [".ALLOCSTACK 0xd0", ".ALLOCSTACK 0x20", ".PUSHREG RBP"]
+        );
+        assert_eq!(
+            strings(&e, 2),
+            [".SETFRAME RBP, 0x30", ".ALLOCSTACK 0x12345", ".PUSHFRAME"]
+        );
+        assert_eq!(
+            strings(&e, 3),
+            [
+                ".SAVEREG RBX, 0x180",
+                ".SAVEREG R12, 0x10008",
+                ".SAVEXMM128 XMM6, 0x20",
+                ".PUSHFRAME <code>"
+            ]
+        );
+        assert_eq!(
+            strings(&e, 4),
+            [".SAVEXMM128 XMM15, 0x20010", ".ALLOCSTACK 0x8"]
+        );
+        assert_eq!(
+            strings(&e, 5),
+            [
+                "EPILOG: size=0x5, offset from the end=-0x5",
+                "EPILOG: size=0x5, offset from the end=-0x320",
+                "",
+                ".PUSHREG RSI"
+            ]
+        );
+        assert_eq!(
+            strings(&e, 6),
+            ["EPILOG: size=0x7, offset from the end=-0x234"]
+        );
+        let validity: Vec<_> = body(&e, 5).codes.iter().map(UnwindCode::is_valid).collect();
+        assert_eq!(validity, [true, true, false, true]);
+        assert_eq!(body(&e, 5).size_of_epilog, Some(5));
+        assert_eq!(body(&e, 0).size_of_epilog, None);
+    }
+
+    #[test]
+    fn reads_header_fields_and_the_trailing_dword() {
+        let e = exceptions(VALID);
+        let first = info(&e, 0);
+        assert_eq!(
+            (
+                first.version,
+                first.flags,
+                first.size_of_prolog,
+                first.count_of_codes
+            ),
+            (1, 3, 0x10, 4)
+        );
+        assert!(matches!(
+            body(&e, 0).trailer,
+            Some(Trailer::ExceptionHandler(0x103C))
+        ));
+        let frame = info(&e, 2);
+        assert_eq!((frame.frame_register, frame.frame_offset), (5, 3));
+        // An undefined flag reserves the DWORD, but names no field.
+        assert_eq!(info(&e, 4).flags, 8);
+        assert!(body(&e, 4).trailer.is_none());
+    }
+
+    #[test]
+    fn entries_pointing_at_one_record_share_it() {
+        let e = exceptions(VALID);
+        assert_eq!(e.entries[0].unwind_info, e.entries[1].unwind_info);
+        assert_eq!(e.unwind_infos.len(), 9);
+    }
+
+    #[test]
+    fn chained_entries_link_to_the_entry_their_function_entry_begins() {
+        let e = exceptions(VALID);
+        assert_eq!(chained(&e, 8), Some(7));
+        assert_eq!(chained(&e, 9), None, "no entry begins at the FunctionEntry");
+        assert_eq!(
+            e.entries[10].unwind_info, None,
+            "bit 0 of UnwindData is set"
+        );
+    }
+
+    #[test]
+    fn chain_cycles_and_self_references_are_plain_links() {
+        let e = exceptions(CRAFTED);
+        assert_eq!(e.entries.len(), 5);
+        assert_eq!(chained(&e, 1), Some(1));
+        assert_eq!((chained(&e, 2), chained(&e, 3)), (Some(3), Some(2)));
+    }
+
+    #[test]
+    fn reads_all_255_codes_of_a_record() {
+        let e = exceptions(CRAFTED);
+        assert_eq!(info(&e, 0).count_of_codes, 255);
+        assert_eq!(body(&e, 0).codes.len(), 255);
+    }
+
+    #[test]
+    fn a_record_cut_off_by_the_section_end_keeps_only_its_header() {
+        let e = exceptions(CRAFTED);
+        let truncated = info(&e, 4);
+        assert_eq!((truncated.version, truncated.count_of_codes), (1, 4));
+        assert!(truncated.body.is_none());
+    }
+
+    #[test]
+    fn stops_before_an_unsupported_version_or_unknown_code() {
+        let bad_version = patched(VALID, unwind_data(3), &[3]);
+        assert_eq!(exceptions(&bad_version).entries.len(), 3);
+        // The second record's first code becomes op 7, which pefile does not know.
+        let unknown_op = patched(VALID, unwind_data(2) + 5, &[0x07]);
+        assert_eq!(exceptions(&unknown_op).entries.len(), 2);
+    }
+
+    #[test]
+    fn a_read_pefile_raises_on_leaves_the_directory_empty() {
+        let pe = parse(VALID).unwrap();
+        let table = pe.headers.optional_header.data_directory[EXCEPTION_DIRECTORY].virtual_address;
+        // The fourth entry's UnwindData points past the end of the file.
+        let past_end = patched(VALID, table + 3 * 12 + 8, &0x7FFF_0000u32.to_le_bytes());
+        assert!(exceptions(&past_end).entries.is_empty());
+        // A one-slot ALLOC_LARGE in the last slot of a 1-code record overruns the record.
+        let overrun = patched(VALID, unwind_data(7) + 5, &[0x11]);
+        assert!(exceptions(&overrun).entries.is_empty());
+    }
+
+    #[test]
+    fn stops_at_the_record_that_passes_the_code_budget() {
+        let pe = parse(VALID).unwrap();
+        let d = &pe.headers.optional_header.data_directory[EXCEPTION_DIRECTORY];
+        let read = |budget| {
+            let e = pe.read_exceptions(VALID, d.virtual_address, d.size, budget);
+            e.unwrap().entries.len()
+        };
+        // The first record has 3 codes, shared by two entries; the second has 3 more.
+        assert_eq!(read(5), 2);
+        assert_eq!(read(6), 3);
+        assert_eq!(read(18), 11, "the fixture has 18 codes");
+    }
+
+    #[test]
+    fn other_machines_have_no_exception_directory() {
+        let pe = parse(VALID).unwrap();
+        let machine = pe.headers.dos_header.e_lfanew as usize + 4;
+        let mut x86 = VALID.to_vec();
+        x86[machine..machine + 2].copy_from_slice(&0x14Cu16.to_le_bytes());
+        assert!(exceptions(&x86).entries.is_empty());
+        let mut ia64 = VALID.to_vec();
+        ia64[machine..machine + 2].copy_from_slice(&MACHINE_IA64.to_le_bytes());
+        assert_eq!(exceptions(&ia64).entries.len(), 11);
+    }
+}
