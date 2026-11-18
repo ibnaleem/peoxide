@@ -119,6 +119,14 @@ def debug(section, pdb):
     return section.put(entry), len(entry)
 
 
+def shared_debug(section, count, record_size):
+    """`count` CodeView entries that all point at one RSDS record of `record_size` bytes."""
+    record = b"RSDS" + bytes(20) + b"p" * (record_size - 24)
+    rva = section.put(record)
+    entry = struct.pack("<2I2H4I", 0, 0, 0, 0, CODEVIEW, record_size, rva, section.offset(rva))
+    return section.put(entry * count), len(entry) * count
+
+
 def version_block(key, value=b"", children=(), text=False, value_length=None):
     """A VS_VERSIONINFO-style node. wLength covers the children but not trailing padding."""
     length = len(value) if value_length is None else value_length
@@ -297,6 +305,10 @@ def crafted():
         "shared_thunks.dll": build(AMD64, True, 0x2022, GUI, shared_thunks),
         # Imports stay under the cap, and 16 delay-import descriptors sharing one table cross it.
         "shared_delay_thunks.dll": build(AMD64, True, 0x2022, GUI, shared_delay_thunks),
+        # 300 debug entries share one CodeView record with a 4,072-byte PDB name.
+        "shared_codeview.dll": build(
+            AMD64, True, 0x2022, GUI, [(b".rdata", DATA, lambda s: {DIR_DEBUG: shared_debug(s, 300, 4096)})]
+        ),
         # The resource root claims 131,070 entries in a 16-byte directory.
         "huge_count.dll": build(AMD64, True, 0x2022, GUI, huge_count),
         # The resource root's only entry is the root itself.
