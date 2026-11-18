@@ -4,6 +4,7 @@
 //! entry types, including the rare IMAGE_DEBUG_TYPE_MISC, carry `entry: None`.
 
 use crate::Pe;
+use crate::budget::ByteBudget;
 
 const DEBUG_DIRECTORY: usize = 6;
 const DIRECTORY_ENTRY_SIZE: usize = 28;
@@ -80,27 +81,23 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
 
-/// The file name pefile expects after the fixed part, or `None` when the data is too short or
-/// the name would overdraw `budget`.
+/// The file name pefile expects after the fixed part, or `None` when the data is too short. A
+/// name that does not fit `budget` reads as absent; the rest of the record is still decoded.
 fn split_name(
     record: &[u8],
     fixed: usize,
     declared_size: usize,
-    budget: &mut usize,
+    budget: &ByteBudget,
 ) -> Option<Option<Vec<u8>>> {
-    let name_size = declared_size.saturating_sub(fixed);
-    if record.len() < fixed + name_size {
-        return None;
-    }
-    *budget = budget.checked_sub(name_size)?;
-    Some((name_size > 0).then(|| record[fixed..fixed + name_size].to_vec()))
+    let name = record.get(fixed..fixed + declared_size.saturating_sub(fixed))?;
+    Some((!name.is_empty() && budget.take(name.len())).then(|| name.to_vec()))
 }
 
 fn decode_entry(
     record: &[u8],
     debug_type: u32,
     declared_size: usize,
-    budget: &mut usize,
+    budget: &ByteBudget,
 ) -> Option<DebugEntry> {
     match debug_type {
         TYPE_CODEVIEW if record.starts_with(b"RSDS") && record.len() >= PDB70_FIXED_SIZE => {
@@ -152,19 +149,19 @@ impl Pe {
         let base = directory.virtual_address as i64;
         // Entries may all point at one record, so the copied PDB names are capped at the file
         // size; a real file's records are disjoint and stay under it. pefile has no cap.
-        let mut name_budget = data.len();
+        let name_budget = ByteBudget::new(data.len());
         (0..count)
             .map(|i| {
                 let rva = base + (i * DIRECTORY_ENTRY_SIZE) as i64;
                 let raw = data.get(self.data_range(rva, Some(DIRECTORY_ENTRY_SIZE as i64))?)?;
                 (raw.len() == DIRECTORY_ENTRY_SIZE)
-                    .then(|| self.debug_entry(data, raw, &mut name_budget))
+                    .then(|| self.debug_entry(data, raw, &name_budget))
             })
             .collect::<Option<Vec<_>>>()
             .unwrap_or_default()
     }
 
-    fn debug_entry(&self, data: &[u8], raw: &[u8], name_budget: &mut usize) -> DebugDirectory {
+    fn debug_entry(&self, data: &[u8], raw: &[u8], name_budget: &ByteBudget) -> DebugDirectory {
         let debug_type = u32_at(raw, 12);
         let size_of_data = u32_at(raw, 16);
         let pointer_to_raw_data = u32_at(raw, 24);
