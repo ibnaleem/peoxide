@@ -95,6 +95,20 @@ def test_random_corruption_never_crashes():
             pos = rng.randrange(0x400 if hot else len(data))
             data[pos] = rng.randrange(256)
         try:
-            peoxide.PE(data=bytes(data))
+            pe = peoxide.PE(data=bytes(data))
         except peoxide.PEFormatError:
-            pass
+            continue
+        read_lazy_directories(pe)
+
+
+def read_lazy_directories(pe):
+    """Builds the directories `PE()` leaves for first access, down to each relocation entry."""
+    blocks = list(pe.DIRECTORY_ENTRY_BASERELOC)
+    config = pe.DIRECTORY_ENTRY_LOAD_CONFIG
+    for dynamic in (config and config.dynamic_relocations) or []:
+        blocks += getattr(dynamic, "relocations", [])
+        for function in getattr(dynamic, "func_relocs", []):
+            blocks += function.relocations
+    for block in blocks:
+        for entry in block.entries:
+            entry.struct

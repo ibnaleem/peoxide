@@ -399,11 +399,39 @@ def test_corpus_has_rich_headers():
     assert any(peoxide.PE(str(p)).RICH_HEADER for p in CORPUS)
 
 
-def relocations(pe):
+MISSING = "missing"
+RELOCATION_ENTRY_FIELDS = [
+    "Data",
+    "PageRelativeOffset",
+    "IndirectCall",
+    "IATIndex",
+    "RexWPrefix",
+    "CfgCheck",
+    "Reserved",
+    "RegisterNumber",
+]
+
+
+def fields(struct, names):
+    return [getattr(struct, name, MISSING) for name in names]
+
+
+def relocation_blocks(blocks):
     return [
-        (b.struct.VirtualAddress, b.struct.SizeOfBlock, [(e.type, e.rva, e.base_rva) for e in b.entries])
-        for b in getattr(pe, "DIRECTORY_ENTRY_BASERELOC", [])
+        (
+            b.struct.VirtualAddress,
+            b.struct.SizeOfBlock,
+            [
+                (getattr(e, "type", MISSING), e.rva, e.base_rva, fields(e.struct, RELOCATION_ENTRY_FIELDS))
+                for e in b.entries
+            ],
+        )
+        for b in blocks
     ]
+
+
+def relocations(pe):
+    return relocation_blocks(getattr(pe, "DIRECTORY_ENTRY_BASERELOC", []))
 
 
 def test_relocations(pair):
@@ -539,3 +567,76 @@ def test_exports(pair):
         return (s.name, s.ordinal, s.address, s.forwarder)
 
     assert [key(s) for s in ours.DIRECTORY_ENTRY_EXPORT.symbols] == [key(s) for s in expected]
+
+
+LOAD_CONFIG_FIELDS = [f.split(",")[1] for f in pefile.PE.__IMAGE_LOAD_CONFIG_DIRECTORY64_format__[1]]
+
+
+def dynamic_relocation(d):
+    header = (d.struct.Symbol, d.struct.BaseRelocSize, d.symbol)
+    if not hasattr(d, "func_relocs"):
+        return header, relocation_blocks(d.relocations)
+    functions = [
+        (
+            fields(f.struct, ["OriginalRva", "BDDOffset", "RvaSize", "BaseRelocSize"]),
+            f.func_rva,
+            f.override_rvas,
+            relocation_blocks(f.relocations),
+        )
+        for f in d.func_relocs
+    ]
+    return header, functions, [fields(b.struct, ["Left", "Right", "Value"]) for b in d.bdd_relocs]
+
+
+def load_config(pe):
+    """The structure's fields, `MISSING` where it stops short, and its dynamic relocations."""
+    config = getattr(pe, "DIRECTORY_ENTRY_LOAD_CONFIG", None)
+    if config is None:
+        return None
+    dynamic = config.dynamic_relocations
+    return fields(config.struct, LOAD_CONFIG_FIELDS), dynamic and [dynamic_relocation(d) for d in dynamic]
+
+
+def test_load_config(pair):
+    ours, theirs = pair
+    assert load_config(ours) == load_config(theirs)
+
+
+def dynamic_symbols(pe):
+    config = pe.DIRECTORY_ENTRY_LOAD_CONFIG
+    return {d.symbol for d in (config and config.dynamic_relocations or [])}
+
+
+def test_corpus_has_load_config():
+    configs = [load_config(peoxide.PE(str(p))) for p in CORPUS]
+    assert any(c and MISSING not in c[0] for c in configs)
+
+
+def test_corpus_has_dynamic_relocations():
+    symbols = set().union(*(dynamic_symbols(peoxide.PE(str(p))) for p in CORPUS))
+    assert {3, 4, 5, 6, 7} <= symbols and max(symbols) > 2**32
+
+
+KERNEL_IMAGES = [WINDIR / "System32" / name for name in ("ntoskrnl.exe", "win32kfull.sys")]
+
+
+@pytest.mark.parametrize("path", [p for p in KERNEL_IMAGES if p.exists()], ids=lambda p: p.name)
+def test_kernel_dynamic_relocations(path):
+    """Kernel images hold the most dynamic relocations, often in the bitfield formats."""
+    theirs = pefile.PE(str(path), fast_load=True)
+    theirs.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG"]])
+    ours = peoxide.PE(str(path))
+    assert dynamic_symbols(ours)
+    assert load_config(ours) == load_config(theirs)
+
+
+CRAFTED = Path(__file__).parent / "fixtures" / "crafted"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["load_config_short_size.dll", "load_config_odd_size.dll", "load_config_long_table.dll"],
+)
+def test_crafted_load_config_matches_pefile(name):
+    path = str(CRAFTED / name)
+    assert load_config(peoxide.PE(path)) == load_config(pefile.PE(path))
