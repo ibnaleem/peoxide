@@ -300,6 +300,20 @@ def crafted():
             },
         ),
     ]
+
+    def overlapping_version(section, languages=64):
+        subdirectory = 0x80000000
+        tree = struct.pack("<2I4H2I", 0, 0, 0, 0, 0, 1, RT_VERSION, subdirectory | 24)
+        tree += struct.pack("<2I4H2I", 0, 0, 0, 0, 0, 1, 1, subdirectory | 48)
+        tree += struct.pack("<2I4H", 0, 0, 0, 0, 0, languages)
+        leaf = len(tree) + 8 * languages
+        tree += b"".join(struct.pack("<2I", 0x409 + i, leaf) for i in range(languages))
+        fixed = struct.pack("<13I", 0xFEEF04BD, *[0] * 12)
+        blob = struct.pack("<3H", 0x1000, len(fixed), 0) + "VS_VERSION_INFO\0".encode("utf-16-le")
+        blob += bytes(-len(blob) % 4) + fixed + b"\x01\x00" * 0x800
+        tree += struct.pack("<4I", section.rva + leaf + 16, len(blob), 0, 0)
+        return {DIR_RESOURCE: (section.put(tree + blob), len(tree) + len(blob))}
+
     return {
         # 2,048 import descriptors share one table of 1,000 imports.
         "shared_thunks.dll": build(AMD64, True, 0x2022, GUI, shared_thunks),
@@ -318,6 +332,11 @@ def crafted():
         "signed_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0x7FFFFFFFFFFFF000),
         # The base-relocation directory claims 256 MiB in a 2 KiB file.
         "long_relocations.dll": build(AMD64, True, 0x2022, GUI, long_relocations),
+        # 64 languages share one RT_VERSION leaf whose FileInfo walk finds a block every 4 bytes,
+        # each key running on through 4 KiB of 0x0001 units: about 64 MiB of keys if all kept.
+        "overlapping_version.dll": build(
+            AMD64, True, 0x2022, GUI, [(b".text", CODE, code), (b".rsrc", DATA, overlapping_version)]
+        ),
     }
 
 
