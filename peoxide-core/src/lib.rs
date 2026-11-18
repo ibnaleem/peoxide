@@ -24,7 +24,6 @@ pub use version::{BlockHeader, FileInfo, FixedFileInfo, StringTable, Var, Versio
 use goblin::container::Container;
 use goblin::pe::export::{ExportAddressTableEntry, ExportData};
 use goblin::pe::header::{Header, SIZEOF_COFF_HEADER, SIZEOF_PE_MAGIC};
-use goblin::pe::import::SIZEOF_IMPORT_DIRECTORY_ENTRY;
 use goblin::pe::optional_header::{MAGIC_32, MAGIC_64};
 use goblin::pe::options::ParseOptions;
 use goblin::pe::{characteristic, subsystem};
@@ -164,8 +163,8 @@ struct Tables<'a> {
 }
 
 impl<'a> Tables<'a> {
-    /// Follows the start of `PE::parse_with_opts`: the same reads, in the same order, failing
-    /// on the same errors.
+    /// Follows the start of `PE::parse_with_opts` but skips its import-directory checks. pefile
+    /// reads the import table wherever it lies and never rejects a file over it.
     fn read(data: &'a [u8], header: &Header<'a>, opts: &ParseOptions) -> Result<Self, Error> {
         let sections_offset = &mut (header.dos_header.pe_pointer as usize
             + SIZEOF_PE_MAGIC
@@ -193,46 +192,7 @@ impl<'a> Tables<'a> {
             tables.export_data =
                 ExportData::parse_with_opts(data, table, &tables.sections, alignment, opts).ok();
         }
-        if let Some(&table) = directories.get_import_table() {
-            check_import_directory(data, table, &tables.sections, alignment, opts)?;
-        }
         Ok(tables)
-    }
-}
-
-/// goblin's checks on the import directory, without its read of every thunk table: the
-/// directory must map into the file, and so must each descriptor up to the last one.
-fn check_import_directory(
-    data: &[u8],
-    table: DataDirectory,
-    sections: &[Section],
-    file_alignment: u32,
-    opts: &ParseOptions,
-) -> Result<(), Error> {
-    let rva = table.virtual_address as usize;
-    let mut offset = goblin::pe::utils::find_offset(rva, sections, file_alignment, opts)
-        .ok_or_else(|| {
-            Error::Malformed(format!(
-                "Cannot map import_directory_table_rva {rva:#x} into offset"
-            ))
-        })?;
-    loop {
-        let end = offset.checked_add(SIZEOF_IMPORT_DIRECTORY_ENTRY);
-        let Some(entry) = end.and_then(|end| data.get(offset..end)) else {
-            return Err(Error::Malformed(format!(
-                "Import directory entry at offset {offset:#x} extends beyond file bounds \
-                 (file size: {:#x})",
-                data.len()
-            )));
-        };
-        let field = |at: usize| {
-            u32::from_le_bytes([entry[at], entry[at + 1], entry[at + 2], entry[at + 3]])
-        };
-        // goblin stops at a null entry or one without a name or an address table.
-        if field(12) == 0 || field(16) == 0 {
-            return Ok(());
-        }
-        offset += SIZEOF_IMPORT_DIRECTORY_ENTRY;
     }
 }
 
@@ -418,9 +378,23 @@ mod tests {
     fn rejects_garbage_and_truncated_input() {
         assert!(parse(b"not a pe file").is_err());
         assert!(parse(&[]).is_err());
-        for len in [2, 64, 0x100, 0x400] {
+        for len in [2, 64, 0x100] {
             assert!(parse(&DLL[..len]).is_err(), "truncated to {len} bytes");
         }
+    }
+
+    #[test]
+    fn reads_an_import_table_inside_the_headers() {
+        let pe = parse(include_bytes!("../../tests/fixtures/header_imports.exe")).unwrap();
+        assert!(
+            (pe.headers.optional_header.data_directory[1].virtual_address as i64) < pe.header_size
+        );
+        assert_eq!(pe.imports.len(), 1);
+        assert_eq!(pe.imports[0].dll, b"KERNEL32.dll");
+        assert_eq!(
+            pe.imports[0].imports[0].name.as_deref(),
+            Some(&b"ExitProcess"[..])
+        );
     }
 
     #[test]

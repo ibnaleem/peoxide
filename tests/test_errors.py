@@ -37,10 +37,22 @@ def test_name_and_data_agree():
 
 
 @needs_kernel32
-@pytest.mark.parametrize("length", [2, 0x40, 0x100, 0x200, 0x400, 0x1000, 0x10000])
+@pytest.mark.parametrize("length", [2, 0x40, 0x100, 0x200])
 def test_truncated_file_raises(length):
     with pytest.raises(peoxide.PEFormatError):
         peoxide.PE(data=KERNEL32.read_bytes()[:length])
+
+
+@needs_kernel32
+@pytest.mark.parametrize("length", [0x400, 0x1000, 0x10000])
+def test_file_cut_inside_its_sections_parses_like_pefile(length):
+    import pefile
+
+    data = KERNEL32.read_bytes()[:length]
+    ours, theirs = peoxide.PE(data=data), pefile.PE(data=data)
+    assert len(ours.sections) == len(theirs.sections)
+    expected = getattr(theirs, "DIRECTORY_ENTRY_IMPORT", [])
+    assert [d.dll for d in ours.DIRECTORY_ENTRY_IMPORT] == [d.dll for d in expected]
 
 
 I64_MAX = 2**63 - 1

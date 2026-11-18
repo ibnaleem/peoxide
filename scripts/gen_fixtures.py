@@ -196,6 +196,17 @@ def build(machine, wide, characteristics, subsystem, layout, image_base=None):
     return out
 
 
+def header_imports(image):
+    """Moves a 64-bit image's import table into its headers, below SizeOfHeaders."""
+    rva = 0x300
+    section = Section(b"", 0, rva, rva)
+    directory = imports(section, True, [(b"KERNEL32.dll", [b"ExitProcess"])])
+    out = bytearray(image)
+    out[rva : rva + len(section.data)] = section.data
+    struct.pack_into("<2I", out, E_LFANEW + 24 + 112 + 8 * DIR_IMPORT, *directory)
+    return bytes(out)
+
+
 def fixtures():
     dll = [
         (b".text", CODE, code),
@@ -241,6 +252,7 @@ def fixtures():
         "high_ordinal_base.dll": build(AMD64, True, 0x2022, GUI, high_ordinal_base),
         "sample32.exe": build(I386, False, 0x0102, CUI, exe),
         "driver.sys": build(AMD64, True, 0x0022, NATIVE, driver),
+        "header_imports.exe": header_imports(build(AMD64, True, 0x0022, CUI, [(b".text", CODE, code)])),
         **{f"crafted/{name}": data for name, data in crafted().items()},
     }
 
