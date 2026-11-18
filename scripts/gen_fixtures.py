@@ -17,7 +17,9 @@ HEADERS_SIZE = 0x400
 E_LFANEW = 0x40
 TEXT_RVA = SECTION_ALIGN
 
-DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_RELOC, DIR_DEBUG, DIR_DELAY = 0, 1, 2, 5, 6, 13
+DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_RELOC, DIR_DEBUG, DIR_BOUND, DIR_DELAY = 0, 1, 2, 5, 6, 11, 13
+# Linkers put bound imports in the headers, after the section table.
+BOUND_OFFSET = 0x300
 CODE = 0x60000020
 DATA = 0x40000040
 AMD64, I386 = 0x8664, 0x14C
@@ -119,6 +121,36 @@ def debug(section, pdb):
     return section.put(entry), len(entry)
 
 
+def bound_imports(descriptors):
+    """IMAGE_BOUND_IMPORT_DESCRIPTORs, each followed by its IMAGE_BOUND_FORWARDER_REFs, then a
+    zero terminator and the module names. A descriptor is (stamp, name, refs), or
+    (stamp, name, refs, count) to claim a different NumberOfModuleForwarderRefs. A ref is
+    (stamp, name). A name given as an int is written as OffsetModuleName unchanged."""
+    names_start = 8 * (sum(1 + len(d[2]) for d in descriptors) + 1)
+    names, offsets = b"", {}
+
+    def offset(name):
+        nonlocal names
+        if isinstance(name, int):
+            return name
+        if name not in offsets:
+            offsets[name] = names_start + len(names)
+            names += name + b"\0"
+        return offsets[name]
+
+    table = b""
+    for stamp, name, refs, *count in descriptors:
+        table += struct.pack("<I2H", stamp, offset(name), count[0] if count else len(refs))
+        table += b"".join(struct.pack("<I2H", s, offset(n), 0) for s, n in refs)
+    return table + bytes(8) + names
+
+
+VALID_BOUND = [
+    (0x5F000001, b"KERNEL32.dll", [(0x5F000002, b"NTDLL.DLL"), (0x5F000003, b"KERNELBASE.dll")]),
+    (0x5F000004, b"USER32.dll", []),
+]
+
+
 def version_block(key, value=b"", children=(), text=False, value_length=None):
     """A VS_VERSIONINFO-style node. wLength covers the children but not trailing padding."""
     length = len(value) if value_length is None else value_length
@@ -157,10 +189,16 @@ def resources(section):
     return section.put(tree + data), len(tree) + len(data)
 
 
-def build(machine, wide, characteristics, subsystem, layout, image_base=None):
+def build(machine, wide, characteristics, subsystem, layout, image_base=None, bound=None):
+    """`bound` is a bound-import blob for the headers, or (blob, address) to point the
+    directory somewhere else."""
     if image_base is None:
         image_base = 0x180000000 if wide else 0x400000
     sections, directories = [], {}
+    if isinstance(bound, bytes):
+        bound = (bound, BOUND_OFFSET)
+    if bound:
+        directories[DIR_BOUND] = (bound[1], len(bound[0]))
     raw, rva = HEADERS_SIZE, SECTION_ALIGN
     for name, flags, fill in layout:
         section = Section(name, flags, rva, raw)
@@ -190,10 +228,18 @@ def build(machine, wide, characteristics, subsystem, layout, image_base=None):
     coff = struct.pack("<2H3I2H", machine, len(sections), 0, 0, 0, len(optional), characteristics)
     headers = b"MZ" + bytes(E_LFANEW - 6) + struct.pack("<I", E_LFANEW) + b"PE\0\0" + coff
     headers += optional + b"".join(s.header() for s in sections)
+    if bound:
+        assert len(headers) <= BOUND_OFFSET
+        headers = headers.ljust(BOUND_OFFSET, b"\0") + bound[0]
     out = headers.ljust(HEADERS_SIZE, b"\0")
     for section in sections:
         out += bytes(section.data).ljust(align(len(section.data), FILE_ALIGN), b"\0")
     return out
+
+
+def bound_layout(wide):
+    kernel32 = [(b"KERNEL32.dll", [b"ExitProcess"]), (b"USER32.dll", [b"MessageBoxW"])]
+    return [(b".text", CODE, code), (b".rdata", DATA, lambda s: {DIR_IMPORT: imports(s, wide, kernel32)})]
 
 
 def fixtures():
@@ -241,6 +287,12 @@ def fixtures():
         "high_ordinal_base.dll": build(AMD64, True, 0x2022, GUI, high_ordinal_base),
         "sample32.exe": build(I386, False, 0x0102, CUI, exe),
         "driver.sys": build(AMD64, True, 0x0022, NATIVE, driver),
+        "bound_imports.dll": build(
+            AMD64, True, 0x2022, GUI, bound_layout(True), bound=bound_imports(VALID_BOUND)
+        ),
+        "bound_imports32.exe": build(
+            I386, False, 0x0102, CUI, bound_layout(False), bound=bound_imports(VALID_BOUND)
+        ),
         **{f"crafted/{name}": data for name, data in crafted().items()},
     }
 
@@ -292,7 +344,44 @@ def crafted():
             },
         ),
     ]
+    text_only = [(b".text", CODE, code)]
+    huge_refs = [(0, b"KERNEL32.dll", [(1, b"NTDLL.DLL"), (2, b"KERNELBASE.dll")], 0xFFFF)]
+    bad_names = [
+        (1, b"KERNEL32.dll", [(2, b"NTDLL.DLL"), (3, b"bad\x01.dll"), (4, b"KERNELBASE.dll")]),
+        (5, b"USER32\x7f.dll", []),
+    ]
+    name_outside = [(1, b"KERNEL32.dll", []), (2, 0xFFF0, [])]
+
+    def bound_at_text_rva(section):
+        """The descriptors at file offset 0x1000, which is also .text's RVA."""
+        section.put(bytes(0x1000 - section.raw))
+        blob = bound_imports(VALID_BOUND)
+        return {DIR_BOUND: (section.offset(section.put(blob)), len(blob))}
+
+    bound_in_section = [(b".text", CODE, code), (b".data", DATA, bound_at_text_rva)]
+    shared_name = bound_imports([(i + 1, b"a" * 252 + b".dll", []) for i in range(8000)])
+
+    def bound_in_data(section):
+        return {DIR_BOUND: (section.offset(section.put(shared_name)), len(shared_name))}
+
+    bound_shared_names = [(b".text", CODE, code), (b".data", DATA, bound_in_data)]
     return {
+        # NumberOfModuleForwarderRefs is 0xFFFF; the headers have room for 31 refs.
+        "bound_huge_count.dll": build(AMD64, True, 0x2022, GUI, text_only, bound=bound_imports(huge_refs)),
+        # A forwarder name and a module name hold bytes outside string.printable.
+        "bound_bad_names.dll": build(AMD64, True, 0x2022, GUI, text_only, bound=bound_imports(bad_names)),
+        # The second module name's offset points past the end of the file.
+        "bound_name_outside.dll": build(
+            AMD64, True, 0x2022, GUI, text_only, bound=bound_imports(name_outside)
+        ),
+        # The directory starts 4 bytes before the end of the file.
+        "bound_truncated.dll": build(
+            AMD64, True, 0x2022, GUI, text_only, bound=(bound_imports(VALID_BOUND), 0x5FC)
+        ),
+        # Read as an RVA, the directory address would land in .text.
+        "bound_in_section.dll": build(AMD64, True, 0x2022, GUI, bound_in_section),
+        # 8,000 descriptors share one 256-byte name: 2 MB of names from a 66 KB file.
+        "bound_shared_names.dll": build(AMD64, True, 0x2022, GUI, bound_shared_names),
         # 2,048 import descriptors share one table of 1,000 imports.
         "shared_thunks.dll": build(AMD64, True, 0x2022, GUI, shared_thunks),
         # Imports stay under the cap, and 16 delay-import descriptors sharing one table cross it.
