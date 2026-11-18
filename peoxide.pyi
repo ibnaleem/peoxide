@@ -265,15 +265,154 @@ class _BaseRelocation:
     SizeOfBlock: int
 
 @final
+class _BaseRelocationEntry:
+    Data: int
+
+@final
+class _ImportControlTransferDynamicRelocation:
+    PageRelativeOffset: int
+    IndirectCall: int
+    IATIndex: int
+
+@final
+class _IndirControlTransferDynamicRelocation:
+    PageRelativeOffset: int
+    IndirectCall: int
+    RexWPrefix: int
+    CfgCheck: int
+    Reserved: int
+
+@final
+class _SwitchtableBranchDynamicRelocation:
+    PageRelativeOffset: int
+    RegisterNumber: int
+
+@final
 class _RelocationData:
-    type: int
+    # Only on base relocation entries; the dynamic relocation bitfield formats raise
+    # AttributeError.
+    @property
+    def type(self) -> int: ...
     rva: int
     base_rva: int
+    @property
+    def struct(
+        self,
+    ) -> (
+        _BaseRelocationEntry
+        | _ImportControlTransferDynamicRelocation
+        | _IndirControlTransferDynamicRelocation
+        | _SwitchtableBranchDynamicRelocation
+    ): ...
 
 @final
 class _BaseRelocationData:
     struct: _BaseRelocation
     entries: list[_RelocationData]
+
+@final
+class _LoadConfigDirectory:
+    # A structure whose Size stops early lacks the later fields, which raise AttributeError.
+    Size: int
+    TimeDateStamp: int
+    MajorVersion: int
+    MinorVersion: int
+    GlobalFlagsClear: int
+    GlobalFlagsSet: int
+    CriticalSectionDefaultTimeout: int
+    DeCommitFreeBlockThreshold: int
+    DeCommitTotalFreeThreshold: int
+    LockPrefixTable: int
+    MaximumAllocationSize: int
+    VirtualMemoryThreshold: int
+    ProcessHeapFlags: int
+    ProcessAffinityMask: int
+    CSDVersion: int
+    DependentLoadFlags: int
+    EditList: int
+    SecurityCookie: int
+    SEHandlerTable: int
+    SEHandlerCount: int
+    GuardCFCheckFunctionPointer: int
+    GuardCFDispatchFunctionPointer: int
+    GuardCFFunctionTable: int
+    GuardCFFunctionCount: int
+    GuardFlags: int
+    CodeIntegrityFlags: int
+    CodeIntegrityCatalog: int
+    CodeIntegrityCatalogOffset: int
+    CodeIntegrityReserved: int
+    GuardAddressTakenIatEntryTable: int
+    GuardAddressTakenIatEntryCount: int
+    GuardLongJumpTargetTable: int
+    GuardLongJumpTargetCount: int
+    DynamicValueRelocTable: int
+    CHPEMetadataPointer: int
+    GuardRFFailureRoutine: int
+    GuardRFFailureRoutineFunctionPointer: int
+    DynamicValueRelocTableOffset: int
+    DynamicValueRelocTableSection: int
+    Reserved2: int
+    GuardRFVerifyStackPointerFunctionPointer: int
+    HotPatchTableOffset: int
+    Reserved3: int
+    EnclaveConfigurationPointer: int
+    VolatileMetadataPointer: int
+    GuardEHContinuationTable: int
+    GuardEHContinuationCount: int
+    GuardXFGCheckFunctionPointer: int
+    GuardXFGDispatchFunctionPointer: int
+    GuardXFGTableDispatchFunctionPointer: int
+    CastGuardOsDeterminedFailureMode: int
+    GuardMemcpyFunctionPointer: int
+
+@final
+class _DynamicRelocation:
+    Symbol: int
+    BaseRelocSize: int
+
+@final
+class _DynamicRelocationData:
+    struct: _DynamicRelocation
+    symbol: int
+    relocations: list[_BaseRelocationData]
+
+@final
+class _FunctionOverrideDynamicRelocation:
+    OriginalRva: int
+    BDDOffset: int
+    RvaSize: int
+    BaseRelocSize: int
+
+@final
+class _FunctionOverrideDynamicRelocationData:
+    struct: _FunctionOverrideDynamicRelocation
+    func_rva: int
+    override_rvas: list[int]
+    relocations: list[_BaseRelocationData]
+
+@final
+class _BddDynamicRelocation:
+    Left: int
+    Right: int
+    Value: int
+
+@final
+class _BddDynamicRelocationData:
+    struct: _BddDynamicRelocation
+
+@final
+class _FunctionOverrideData:
+    struct: _DynamicRelocation
+    symbol: int
+    bdd_relocs: list[_BddDynamicRelocationData]
+    func_relocs: list[_FunctionOverrideDynamicRelocationData]
+
+@final
+class _LoadConfigData:
+    struct: _LoadConfigDirectory
+    @property
+    def dynamic_relocations(self) -> list[_DynamicRelocationData | _FunctionOverrideData] | None: ...
 
 @final
 class _ResourceDirectoryStruct:
@@ -402,6 +541,8 @@ class PE:
     def DIRECTORY_ENTRY_BASERELOC(self) -> list[_BaseRelocationData]: ...
     @property
     def DIRECTORY_ENTRY_RESOURCE(self) -> _ResourceDirData | None: ...
+    @property
+    def DIRECTORY_ENTRY_LOAD_CONFIG(self) -> _LoadConfigData | None: ...
     # The version attributes raise AttributeError when the file has no version information.
     @property
     def VS_VERSIONINFO(self) -> list[_VersionInfoStruct]: ...

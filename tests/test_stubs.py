@@ -18,6 +18,8 @@ SAMPLES = [
     WINDIR / "System32" / "user32.dll",
     FIXTURES / "sample64.dll",
     FIXTURES / "sample32.exe",
+    # Every kind of dynamic relocation.
+    FIXTURES / "load_config64.dll",
 ]
 
 
