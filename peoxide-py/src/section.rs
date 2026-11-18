@@ -2,8 +2,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::pe::SaturatingI64;
-use crate::{bytes, hexdigest, no_panic};
+use crate::{SaturatingI64, bytes, hexdigest, no_panic};
 
 /// Exposed fields are Python objects for the reason given on `py_class!`.
 #[pyclass(frozen, dict, module = "peoxide")]

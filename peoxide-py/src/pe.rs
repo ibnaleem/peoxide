@@ -1,6 +1,6 @@
 use pyo3::IntoPyObjectExt;
 use pyo3::buffer::PyBuffer;
-use pyo3::exceptions::{PyOSError, PyOverflowError, PyTypeError};
+use pyo3::exceptions::{PyOSError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyList, PyTuple};
@@ -13,7 +13,7 @@ use crate::headers::{DosHeader, FileHeader, NtHeaders, OptionalHeader};
 use crate::resource::ResourceDirData;
 use crate::section::Section;
 use crate::version::VersionLists;
-use crate::{PEFormatError, hexdigest, list, missing, no_panic};
+use crate::{PEFormatError, SaturatingI64, hexdigest, list, missing, no_panic};
 
 /// The file's contents, read into the `bytes` object itself so the file is held only once.
 fn read_file<'py>(py: Python<'py>, path: &std::path::Path) -> PyResult<Bound<'py, PyBytes>> {
@@ -185,7 +185,7 @@ impl PE {
     /// An RVA outside every section comes back unchanged, as in pefile, even one below the
     /// `i64` range, which `saturating_i64` pins to `i64::MIN`.
     fn get_offset_from_rva<'py>(&self, rva: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-        let value = saturating_i64(rva)?;
+        let SaturatingI64(value) = rva.extract()?;
         match no_panic(|| self.pe.offset_from_rva(value))? {
             Some(i64::MIN) => Ok(rva.clone()),
             Some(offset) => offset.into_bound_py_any(rva.py()),
@@ -203,7 +203,7 @@ impl PE {
         &self,
         offset: &Bound<'py, PyAny>,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
-        let value = saturating_i64(offset)?;
+        let SaturatingI64(value) = offset.extract()?;
         match no_panic(|| self.pe.rva_from_offset(value))? {
             Some(i64::MIN | i64::MAX) => Ok(Some(offset.clone())),
             rva => rva
@@ -418,14 +418,13 @@ impl PE {
     fn get_string_at_rva<'py>(
         &self,
         py: Python<'py>,
-        rva: Option<&Bound<'py, PyAny>>,
-        max_length: Option<&Bound<'py, PyAny>>,
+        rva: Option<SaturatingI64>,
+        max_length: Option<SaturatingI64>,
     ) -> PyResult<Option<Bound<'py, PyBytes>>> {
-        let rva = rva.map(saturating_i64).transpose()?;
-        let Some(rva) = rva.filter(|&rva| rva >= 0) else {
+        let Some(SaturatingI64(rva @ 0..)) = rva else {
             return Ok(None);
         };
-        let max_length = max_length.map_or(Ok(MAX_STRING_LENGTH), saturating_i64)?;
+        let max_length = max_length.map_or(MAX_STRING_LENGTH, |length| length.0);
         let file = self.data.as_bytes(py);
         let string = no_panic(|| self.pe.string_at_rva(file, rva, max_length))?;
         Ok(Some(PyBytes::new(py, string)))
@@ -466,7 +465,7 @@ impl PE {
     /// `None` for a negative RVA. pefile would read from the end of the headers or the file.
     fn uint_at_rva(&self, rva: &Bound<'_, PyAny>, size: usize) -> PyResult<Option<u64>> {
         let file = self.data.as_bytes(rva.py());
-        let rva = saturating_i64(rva)?;
+        let SaturatingI64(rva) = rva.extract()?;
         if rva < 0 {
             return Ok(None);
         }
@@ -476,32 +475,10 @@ impl PE {
     /// `None` for a negative offset. pefile would count that from the end of the file.
     fn uint_at_offset(&self, offset: &Bound<'_, PyAny>, size: usize) -> PyResult<Option<u64>> {
         let file = self.data.as_bytes(offset.py());
-        let Ok(start) = usize::try_from(saturating_i64(offset)?) else {
+        let SaturatingI64(offset) = offset.extract()?;
+        let Ok(start) = usize::try_from(offset) else {
             return Ok(None);
         };
         Ok(peoxide_core::uint_at_offset(file, start, size))
-    }
-}
-
-/// A Python integer as an `i64`, pinned to the nearest end of the range when it does not fit.
-/// No address or length that large can be inside a file, so the caller treats it as out of
-/// range, where an `OverflowError` would surprise code written for pefile.
-fn saturating_i64(value: &Bound<'_, PyAny>) -> PyResult<i64> {
-    match value.extract::<i64>() {
-        Err(e) if e.is_instance_of::<PyOverflowError>(value.py()) => {
-            Ok(if value.lt(0)? { i64::MIN } else { i64::MAX })
-        }
-        other => other,
-    }
-}
-
-/// An argument converted by `saturating_i64`.
-pub(crate) struct SaturatingI64(pub(crate) i64);
-
-impl<'a, 'py> FromPyObject<'a, 'py> for SaturatingI64 {
-    type Error = PyErr;
-
-    fn extract(value: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        saturating_i64(&value).map(SaturatingI64)
     }
 }
