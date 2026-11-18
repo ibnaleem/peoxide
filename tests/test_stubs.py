@@ -37,12 +37,13 @@ def stub_attributes():
 def runtime_classes():
     """`{class name: (class, public attribute names)}` for every peoxide object reachable from
     PE."""
-    found, seen = {}, set()
+    # `seen` holds each object, so a value built on access can't be freed and its id reused.
+    found, seen = {}, {}
 
     def walk(obj):
         if id(obj) in seen:
             return
-        seen.add(id(obj))
+        seen[id(obj)] = obj
         if isinstance(obj, list):
             for item in obj:
                 walk(item)
