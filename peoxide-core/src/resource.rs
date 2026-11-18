@@ -2,6 +2,7 @@
 //! Version information is decoded from the finished tree in `version.rs`.
 
 use crate::Pe;
+use crate::budget::ByteBudget;
 
 const RESOURCE_DIRECTORY: usize = 2;
 const DIRECTORY_HEADER_SIZE: i64 = 16;
@@ -10,7 +11,7 @@ const DATA_ENTRY_SIZE: i64 = 16;
 const MAX_DEPTH: usize = 32;
 const MAX_ENTRIES_PER_DIRECTORY: usize = 4096;
 const MAX_ENTRIES: usize = 0x8000;
-/// Total decoded name bytes per tree. Entries may share one long name, so without this a
+/// UTF-16 name bytes one tree may read. Entries may share one long name, so without this a
 /// small file can make gigabytes of names.
 const MAX_NAME_BYTES: usize = 4 << 20;
 const FIRST_STRING_READ: i64 = 256;
@@ -112,7 +113,7 @@ struct Walk<'a> {
     data: &'a [u8],
     base: i64,
     total_entries: usize,
-    name_bytes: usize,
+    names: ByteBudget,
 }
 
 impl Walk<'_> {
@@ -204,16 +205,11 @@ impl Walk<'_> {
                     }
                     break;
                 }
-                if self.name_bytes > MAX_NAME_BYTES {
-                    break;
-                }
-                let decoded = self.string_at(start + 2, length);
-                self.name_bytes += decoded.as_ref().map_or(0, Vec::len);
-                if self.name_bytes > MAX_NAME_BYTES {
+                if !self.names.take(2 * length as usize) {
                     break;
                 }
                 last_name = Some((start, start + length as i64, directory.entries.len()));
-                name = Some(decoded);
+                name = Some(self.string_at(start + 2, length));
             }
             let child = if offset_to_data & 0x8000_0000 != 0 {
                 if parents.contains(&target) {
@@ -295,7 +291,7 @@ impl Pe {
             data,
             base,
             total_entries: 0,
-            name_bytes: 0,
+            names: ByteBudget::new(MAX_NAME_BYTES),
         };
         walk.directory(base, 0, &mut vec![base])
     }

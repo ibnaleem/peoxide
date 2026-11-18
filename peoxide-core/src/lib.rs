@@ -1,4 +1,5 @@
 mod address;
+mod budget;
 mod checksum;
 mod debug;
 pub use debug::{DebugDirectory, DebugEntry};
