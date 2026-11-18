@@ -80,17 +80,31 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
 
-/// The fixed part plus the file name pefile expects, or `None` when the data is too short.
-fn split_name(record: &[u8], fixed: usize, declared_size: usize) -> Option<Option<Vec<u8>>> {
+/// The file name pefile expects after the fixed part, or `None` when the data is too short or
+/// the name would overdraw `budget`.
+fn split_name(
+    record: &[u8],
+    fixed: usize,
+    declared_size: usize,
+    budget: &mut usize,
+) -> Option<Option<Vec<u8>>> {
     let name_size = declared_size.saturating_sub(fixed);
-    (record.len() >= fixed + name_size)
-        .then(|| (name_size > 0).then(|| record[fixed..fixed + name_size].to_vec()))
+    if record.len() < fixed + name_size {
+        return None;
+    }
+    *budget = budget.checked_sub(name_size)?;
+    Some((name_size > 0).then(|| record[fixed..fixed + name_size].to_vec()))
 }
 
-fn decode_entry(record: &[u8], debug_type: u32, declared_size: usize) -> Option<DebugEntry> {
+fn decode_entry(
+    record: &[u8],
+    debug_type: u32,
+    declared_size: usize,
+    budget: &mut usize,
+) -> Option<DebugEntry> {
     match debug_type {
         TYPE_CODEVIEW if record.starts_with(b"RSDS") && record.len() >= PDB70_FIXED_SIZE => {
-            let pdb_file_name = split_name(record, PDB70_FIXED_SIZE, declared_size)?;
+            let pdb_file_name = split_name(record, PDB70_FIXED_SIZE, declared_size, budget)?;
             Some(DebugEntry::Pdb70 {
                 cv_signature: record[0..4].try_into().ok()?,
                 guid_data1: u32_at(record, 4),
@@ -104,7 +118,7 @@ fn decode_entry(record: &[u8], debug_type: u32, declared_size: usize) -> Option<
             })
         }
         TYPE_CODEVIEW if record.starts_with(b"NB10") && record.len() >= PDB20_FIXED_SIZE => {
-            let pdb_file_name = split_name(record, PDB20_FIXED_SIZE, declared_size)?;
+            let pdb_file_name = split_name(record, PDB20_FIXED_SIZE, declared_size, budget)?;
             Some(DebugEntry::Pdb20 {
                 cv_header_signature: u32_at(record, 0),
                 cv_header_offset: u32_at(record, 4),
@@ -136,17 +150,21 @@ impl Pe {
         }
         let count = directory.size as usize / DIRECTORY_ENTRY_SIZE;
         let base = directory.virtual_address as i64;
+        // Entries may all point at one record, so the copied PDB names are capped at the file
+        // size; a real file's records are disjoint and stay under it. pefile has no cap.
+        let mut name_budget = data.len();
         (0..count)
             .map(|i| {
                 let rva = base + (i * DIRECTORY_ENTRY_SIZE) as i64;
                 let raw = data.get(self.data_range(rva, Some(DIRECTORY_ENTRY_SIZE as i64))?)?;
-                (raw.len() == DIRECTORY_ENTRY_SIZE).then(|| self.debug_entry(data, raw))
+                (raw.len() == DIRECTORY_ENTRY_SIZE)
+                    .then(|| self.debug_entry(data, raw, &mut name_budget))
             })
             .collect::<Option<Vec<_>>>()
             .unwrap_or_default()
     }
 
-    fn debug_entry(&self, data: &[u8], raw: &[u8]) -> DebugDirectory {
+    fn debug_entry(&self, data: &[u8], raw: &[u8], name_budget: &mut usize) -> DebugDirectory {
         let debug_type = u32_at(raw, 12);
         let size_of_data = u32_at(raw, 16);
         let pointer_to_raw_data = u32_at(raw, 24);
@@ -161,7 +179,7 @@ impl Pe {
             size_of_data,
             address_of_raw_data: u32_at(raw, 20),
             pointer_to_raw_data,
-            entry: decode_entry(record, debug_type, size_of_data as usize),
+            entry: decode_entry(record, debug_type, size_of_data as usize, name_budget),
         }
     }
 }
