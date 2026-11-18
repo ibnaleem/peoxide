@@ -183,3 +183,102 @@ impl Pe {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECTION_RVA: u32 = 0x1000;
+    const SECTION_OFFSET: usize = 0x200;
+
+    /// A one-section PE32+ whose debug directory holds `count` CodeView entries, all pointing
+    /// at the same RSDS record of `record_len` bytes.
+    fn pe_with_shared_rsds(count: usize, record_len: usize) -> Vec<u8> {
+        let records_len = count * DIRECTORY_ENTRY_SIZE;
+        let mut body = Vec::new();
+        for _ in 0..count {
+            for field in [0u32, 0, 0, TYPE_CODEVIEW, record_len as u32] {
+                body.extend(field.to_le_bytes());
+            }
+            body.extend((SECTION_RVA + records_len as u32).to_le_bytes());
+            body.extend(((SECTION_OFFSET + records_len) as u32).to_le_bytes());
+        }
+        assert_eq!(body.len(), records_len);
+        body.extend(b"RSDS");
+        body.resize(records_len + PDB70_FIXED_SIZE, 0x11);
+        body.resize(records_len + record_len, b'p');
+        let raw_size = body.len().next_multiple_of(0x200);
+        body.resize(raw_size, 0);
+
+        let mut head = vec![0u8; SECTION_OFFSET];
+        head[0..2].copy_from_slice(b"MZ");
+        head[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        let put = |head: &mut Vec<u8>, at: usize, bytes: &[u8]| {
+            head[at..at + bytes.len()].copy_from_slice(bytes)
+        };
+        put(&mut head, 0x40, b"PE\0\0");
+        put(&mut head, 0x44, &0x8664u16.to_le_bytes());
+        put(&mut head, 0x46, &1u16.to_le_bytes());
+        put(&mut head, 0x54, &240u16.to_le_bytes());
+        put(&mut head, 0x56, &0x2022u16.to_le_bytes());
+        let opt = 0x58;
+        put(&mut head, opt, &0x20Bu16.to_le_bytes());
+        put(&mut head, opt + 24, &0x1_8000_0000u64.to_le_bytes());
+        put(&mut head, opt + 32, &0x1000u32.to_le_bytes());
+        put(&mut head, opt + 36, &0x200u32.to_le_bytes());
+        put(&mut head, opt + 40, &6u16.to_le_bytes());
+        put(&mut head, opt + 48, &6u16.to_le_bytes());
+        let size_of_image = (SECTION_RVA as usize + raw_size).next_multiple_of(0x1000);
+        put(&mut head, opt + 56, &(size_of_image as u32).to_le_bytes());
+        put(&mut head, opt + 60, &(SECTION_OFFSET as u32).to_le_bytes());
+        put(&mut head, opt + 68, &3u16.to_le_bytes());
+        put(&mut head, opt + 108, &16u32.to_le_bytes());
+        let debug_dir = opt + 112 + 8 * DEBUG_DIRECTORY;
+        put(&mut head, debug_dir, &SECTION_RVA.to_le_bytes());
+        put(
+            &mut head,
+            debug_dir + 4,
+            &(records_len as u32).to_le_bytes(),
+        );
+        let section = opt + 240;
+        put(&mut head, section, b".rdata");
+        for (at, field) in [raw_size, SECTION_RVA as usize, raw_size, SECTION_OFFSET]
+            .into_iter()
+            .enumerate()
+        {
+            put(
+                &mut head,
+                section + 8 + 4 * at,
+                &(field as u32).to_le_bytes(),
+            );
+        }
+        put(&mut head, section + 36, &0x4000_0040u32.to_le_bytes());
+        [head, body].concat()
+    }
+
+    fn name_len(directory: &DebugDirectory) -> usize {
+        match &directory.entry {
+            Some(DebugEntry::Pdb70 {
+                pdb_file_name: Some(name),
+                ..
+            }) => name.len(),
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn shared_codeview_records_copy_no_more_than_the_file() {
+        let (count, record_len) = (300, 4096);
+        let data = pe_with_shared_rsds(count, record_len);
+        let debug = crate::parse(&data).unwrap().debug;
+
+        assert_eq!(debug.len(), count);
+        assert_eq!(name_len(&debug[0]), record_len - PDB70_FIXED_SIZE);
+        let copied: usize = debug.iter().map(name_len).sum();
+        assert!(
+            copied <= data.len(),
+            "{copied} name bytes copied from a {}-byte file",
+            data.len()
+        );
+    }
+}
