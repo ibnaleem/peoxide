@@ -269,6 +269,8 @@ def test_addresses_beyond_64_bits_follow_pefile(pair, value):
         assert mine.get_data(va, value) == ref.get_data(va, value), mine.Name
         for method in ("contains_rva", "contains", "contains_offset"):
             assert getattr(mine, method)(value) == getattr(ref, method)(value), (mine.Name, method)
+        for method in ("get_offset_from_rva", "get_rva_from_offset"):
+            assert getattr(mine, method)(value) == getattr(ref, method)(value), (mine.Name, method)
 
 
 @pytest.mark.parametrize("rva, length", [(-5, 10), (-5, None), (-16, 8), (-1, 1)])
