@@ -22,7 +22,7 @@ pub use rich::RichHeader;
 pub use version::{BlockHeader, FileInfo, FixedFileInfo, StringTable, Var, Version, VersionInfo};
 
 use goblin::container::Container;
-use goblin::pe::export::{ExportAddressTableEntry, ExportData};
+use goblin::pe::export::{ExportAddressTableEntry, ExportData, ExportDirectoryTable};
 use goblin::pe::header::{Header, SIZEOF_COFF_HEADER, SIZEOF_PE_MAGIC};
 use goblin::pe::import::SIZEOF_IMPORT_DIRECTORY_ENTRY;
 use goblin::pe::optional_header::{MAGIC_32, MAGIC_64};
@@ -120,8 +120,7 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
     let tables = Tables::read(data, &header, &opts)?;
     let headers = headers::from_goblin(&header)?;
     let optional_header_offset = headers.dos_header.e_lfanew as usize + 24;
-    let exports = exports(data, &tables, headers.optional_header.file_alignment, &opts);
-    let mut sections = tables.sections;
+    let mut sections = tables.sections.clone();
     // pefile orders sections by VirtualAddress, not by section-table position.
     sections.sort_by_key(|s| s.virtual_address);
     let mut pe = Pe {
@@ -132,13 +131,15 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
         sections,
         imports: Vec::new(),
         delay_imports: Vec::new(),
-        exports,
+        exports: Vec::new(),
         debug: Vec::new(),
         rich_header: rich::parse(data, optional_header_offset),
         resources: None,
         version: Version::default(),
     };
     // These directories are read through RVAs, which need the section layouts above.
+    let file_alignment = pe.headers.optional_header.file_alignment;
+    pe.exports = exports(&pe, data, &tables, file_alignment, &opts);
     (pe.imports, pe.delay_imports) = pe.parse_import_directories(data);
     pe.debug = pe.parse_debug_directory(data);
     pe.resources = pe.parse_resources(data);
@@ -190,14 +191,60 @@ impl<'a> Tables<'a> {
         let directories = &optional_header.data_directories;
         if let Some(&table) = directories.get_export_table() {
             // goblin ignores an export directory it cannot read, and so does pefile.
-            tables.export_data =
-                ExportData::parse_with_opts(data, table, &tables.sections, alignment, opts).ok();
+            tables.export_data = export_data(data, table, &tables.sections, alignment, opts);
         }
         if let Some(&table) = directories.get_import_table() {
             check_import_directory(data, table, &tables.sections, alignment, opts)?;
         }
         Ok(tables)
     }
+}
+
+/// goblin's `ExportData::parse_with_opts`, except that a table count larger than the file
+/// reads the table up to the end of the file, as pefile does, instead of failing.
+fn export_data<'a>(
+    data: &'a [u8],
+    table: DataDirectory,
+    sections: &[Section],
+    file_alignment: u32,
+    opts: &ParseOptions,
+) -> Option<ExportData<'a>> {
+    let find = |rva: u32| {
+        goblin::pe::utils::find_offset(rva as usize, sections, file_alignment, opts)
+            .and_then(|offset| data.get(offset..))
+    };
+    let directory = ExportDirectoryTable::parse(find(table.virtual_address)?, 0).ok()?;
+    let entries = |rva: u32, count: u32, size: usize| {
+        let bytes = find(rva).unwrap_or_default();
+        let count = (count as usize).min(bytes.len() / size);
+        bytes[..count * size].chunks_exact(size)
+    };
+    let dword = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    let names = directory.number_of_name_pointers;
+    let start = u64::from(table.virtual_address);
+    let forwarders = start..start + u64::from(table.size);
+    Some(ExportData {
+        name: None,
+        export_name_pointer_table: entries(directory.name_pointer_rva, names, 4)
+            .map(dword)
+            .collect(),
+        export_ordinal_table: entries(directory.ordinal_table_rva, names, 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect(),
+        export_address_table: entries(
+            directory.export_address_table_rva,
+            directory.address_table_entries,
+            4,
+        )
+        .map(|b| match dword(b) {
+            rva if forwarders.contains(&u64::from(rva)) => {
+                ExportAddressTableEntry::ForwarderRVA(rva)
+            }
+            rva => ExportAddressTableEntry::ExportRVA(rva),
+        })
+        .collect(),
+        export_directory_table: directory,
+    })
 }
 
 /// goblin's checks on the import directory, without its read of every thunk table: the
@@ -238,6 +285,7 @@ fn check_import_directory(
 
 /// Named exports in name-table order, then ordinal-only exports, matching pefile.
 fn exports(
+    pe: &Pe,
     data: &[u8],
     tables: &Tables,
     file_alignment: u32,
@@ -246,7 +294,7 @@ fn exports(
     let Some(export_data) = &tables.export_data else {
         return Vec::new();
     };
-    let base = export_data.export_directory_table.ordinal_base;
+    let directory = &export_data.export_directory_table;
     let addresses = &export_data.export_address_table;
     let c_string_at = |rva: u32| {
         let offset =
@@ -262,29 +310,51 @@ fn exports(
         };
         (address != 0).then(|| ExportSymbol {
             name,
-            ordinal: u64::from(base).saturating_add(index as u64),
+            ordinal: u64::from(directory.ordinal_base).saturating_add(index as u64),
             address,
             forwarder,
         })
     };
 
+    let names = &export_data.export_name_pointer_table;
+    let names = &names[..names
+        .len()
+        .min(export_table_limit(pe, directory.name_pointer_rva))];
     let mut named = vec![false; addresses.len()];
-    let mut symbols: Vec<ExportSymbol> = export_data
-        .export_name_pointer_table
-        .iter()
-        .zip(&export_data.export_ordinal_table)
-        .filter_map(|(&name_rva, &index)| {
-            let index = index as usize;
-            *named.get_mut(index)? = true;
-            symbol(index, c_string_at(name_rva))
-        })
-        .collect();
+    let mut symbols = Vec::new();
+    for (i, &name_rva) in names.iter().enumerate() {
+        // pefile drops the whole directory at an ordinal outside the address table.
+        let Some(&index) = export_data.export_ordinal_table.get(i) else {
+            return Vec::new();
+        };
+        let Some(seen) = named.get_mut(index as usize) else {
+            return Vec::new();
+        };
+        *seen = true;
+        symbols.extend(symbol(index as usize, c_string_at(name_rva)));
+    }
+    let functions = export_table_limit(pe, directory.export_address_table_rva);
     symbols.extend(
-        (0..addresses.len())
+        (0..addresses.len().min(functions))
             .filter(|&i| !named[i])
             .filter_map(|i| symbol(i, None)),
     );
     symbols
+}
+
+/// How many 4-byte entries pefile reads from an export table at `rva`: those that fit
+/// before the end of its section's data, or in the file size outside every section.
+fn export_table_limit(pe: &Pe, rva: u32) -> usize {
+    let rva = i64::from(rva);
+    let limit = match pe.section_by_rva(rva) {
+        Some(i) => {
+            let section = &pe.sections[i];
+            let range = pe.layouts[i].data_range(section, None, None, false);
+            i64::from(section.virtual_address) + clamp(range, pe.file_size).len() as i64 - rva
+        }
+        None => pe.file_size as i64,
+    };
+    usize::try_from(limit / 4).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -331,6 +401,15 @@ mod tests {
                 (None, 2, 0x1004)
             ]
         );
+    }
+
+    #[test]
+    fn reads_an_export_address_table_larger_than_the_file_to_its_section_end() {
+        let pe = parse(include_bytes!("../../tests/fixtures/huge_export_count.dll")).unwrap();
+        let exports: Vec<_> = pe.exports.iter().map(|e| (e.ordinal, e.address)).collect();
+        // pefile reports 18: the two real exports, then the nonzero dwords after the table.
+        assert_eq!(exports.len(), 18);
+        assert_eq!(exports[..2], [(1, 0x1000), (2, 0x1004)]);
     }
 
     #[test]
