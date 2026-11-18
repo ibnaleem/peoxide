@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn crafted_fixtures_parse_without_panicking() {
-        let crafted: [&[u8]; 7] = [
+        let crafted: [&[u8]; 13] = [
             include_bytes!("../../tests/fixtures/crafted/shared_thunks.dll"),
             include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll"),
             include_bytes!("../../tests/fixtures/crafted/huge_count.dll"),
@@ -435,11 +435,18 @@ mod tests {
             include_bytes!("../../tests/fixtures/crafted/top_image_base.dll"),
             include_bytes!("../../tests/fixtures/crafted/signed_image_base.dll"),
             include_bytes!("../../tests/fixtures/crafted/long_relocations.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_huge_count.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_bad_names.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_name_outside.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_truncated.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_in_section.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_shared_names.dll"),
         ];
         // Ok or Err are both fine; only a panic fails.
         for data in crafted {
             if let Ok(pe) = parse(data) {
                 let _ = pe.parse_relocations(data);
+                let _ = pe.parse_bound_imports(data);
             }
         }
     }

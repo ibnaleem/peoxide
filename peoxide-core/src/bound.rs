@@ -146,3 +146,119 @@ impl Pe {
         Some((self.sections[i].pointer_to_raw_data as i64).saturating_sub(file_offset))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::parse;
+
+    fn names(data: &[u8]) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+        parse(data)
+            .unwrap()
+            .parse_bound_imports(data)
+            .into_iter()
+            .map(|d| (d.name, d.entries.into_iter().map(|r| r.name).collect()))
+            .collect()
+    }
+
+    fn owned(expected: &[(&[u8], &[&[u8]])]) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+        expected
+            .iter()
+            .map(|(name, refs)| (name.to_vec(), refs.iter().map(|r| r.to_vec()).collect()))
+            .collect()
+    }
+
+    const BOUND64: &[u8] = include_bytes!("../../tests/fixtures/bound_imports.dll");
+    const BOUND32: &[u8] = include_bytes!("../../tests/fixtures/bound_imports32.exe");
+    const VALID: &[(&[u8], &[&[u8]])] = &[
+        (b"KERNEL32.dll", &[b"NTDLL.DLL", b"KERNELBASE.dll"]),
+        (b"USER32.dll", &[]),
+    ];
+
+    #[test]
+    fn reads_descriptors_and_forwarder_refs_in_pe32_plus_and_pe32() {
+        for data in [BOUND64, BOUND32] {
+            assert_eq!(names(data), owned(VALID));
+        }
+        let pe = parse(BOUND64).unwrap();
+        let first = &pe.parse_bound_imports(BOUND64)[0];
+        assert_eq!(first.time_date_stamp, 0x5F00_0001);
+        assert_eq!(first.number_of_module_forwarder_refs, 2);
+        assert_eq!(first.entries[1].time_date_stamp, 0x5F00_0003);
+        assert_eq!(first.entries[1].reserved, 0);
+    }
+
+    #[test]
+    fn absent_directory_is_empty() {
+        let data = include_bytes!("../../tests/fixtures/sample64.dll");
+        assert!(names(data).is_empty());
+    }
+
+    #[test]
+    fn short_directory_tables_are_skipped_like_pefile() {
+        // NumberOfRvaAndSizes 13: pefile stops before reaching the bound import directory.
+        let mut data = BOUND64.to_vec();
+        let count = 0x40 + 24 + 108;
+        data[count..count + 4].copy_from_slice(&13u32.to_le_bytes());
+        assert!(names(&data).is_empty());
+    }
+
+    #[test]
+    fn huge_forwarder_count_stops_at_the_next_section() {
+        // 0xFFFF refs claimed at 0x300; the headers end at 0x400, so 31 are read.
+        let data = include_bytes!("../../tests/fixtures/crafted/bound_huge_count.dll");
+        let parsed = names(data);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].1.len(), 31);
+    }
+
+    #[test]
+    fn invalid_names_end_the_walk() {
+        let data = include_bytes!("../../tests/fixtures/crafted/bound_bad_names.dll");
+        // The bad ref name ends KERNEL32's refs, and the unread ref is taken as a descriptor.
+        let expected: &[(&[u8], &[&[u8]])] =
+            &[(b"KERNEL32.dll", &[b"NTDLL.DLL"]), (b"KERNELBASE.dll", &[])];
+        assert_eq!(names(data), owned(expected));
+        let data = include_bytes!("../../tests/fixtures/crafted/bound_name_outside.dll");
+        assert_eq!(names(data), owned(&[(b"KERNEL32.dll", &[])]));
+    }
+
+    #[test]
+    fn shared_names_copy_no_more_than_the_file() {
+        let data = include_bytes!("../../tests/fixtures/crafted/bound_shared_names.dll");
+        let parsed = names(data);
+        assert_eq!(parsed[0].0.len(), 256, "a name is kept whole");
+        let copied: usize = parsed.iter().map(|(name, _)| name.len()).sum();
+        assert!(
+            copied <= data.len(),
+            "{copied} name bytes from {}",
+            data.len()
+        );
+        assert!(parsed.len() < 8000, "the walk stops at the budget");
+    }
+
+    #[test]
+    fn truncated_directory_is_dropped() {
+        let data = include_bytes!("../../tests/fixtures/crafted/bound_truncated.dll");
+        assert!(names(data).is_empty());
+    }
+
+    #[test]
+    fn address_is_read_as_a_file_offset() {
+        // The address is .text's RVA, and the descriptors sit at that file offset in .data.
+        let data = include_bytes!("../../tests/fixtures/crafted/bound_in_section.dll");
+        assert_eq!(names(data), owned(VALID));
+    }
+
+    #[test]
+    fn module_names_follow_pefiles_checks() {
+        let long = [b'a'; 300];
+        assert_eq!(super::module_name(&long, 0), None);
+        assert_eq!(
+            super::module_name(&long[..256], 0),
+            Some(long[..256].to_vec())
+        );
+        assert_eq!(super::module_name(b"a\x01b\0", 0), None);
+        assert_eq!(super::module_name(b"a\tb\0c", 0), Some(b"a\tb".to_vec()));
+        assert_eq!(super::module_name(b"abc", usize::MAX), Some(Vec::new()));
+    }
+}
