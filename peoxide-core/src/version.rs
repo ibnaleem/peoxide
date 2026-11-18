@@ -8,8 +8,7 @@
 //! resource as its key: gigabytes from a small file. One budget per PE bounds the strings
 //! read here, and parsing stops where it runs out, unlike pefile.
 
-use std::cell::Cell;
-
+use crate::budget::ByteBudget;
 use crate::{Pe, ResourceChild, ResourceData};
 
 const RT_VERSION: u32 = 16;
@@ -159,24 +158,18 @@ struct Block<'a> {
     data: &'a [u8],
     raw: &'a [u8],
     base: i64,
-    budget: &'a Cell<usize>,
+    budget: &'a ByteBudget,
 }
 
 impl Block<'_> {
     /// `None` once the PE's budget runs out, which ends every walk that reads strings.
     fn string(&self, offset: i64, max_units: i64) -> Option<Vec<u8>> {
-        if self.budget.get() == 0 {
-            return None;
-        }
         let string = self
             .pe
             .utf16_string_at(self.data, self.base + offset, max_units)?;
-        let left = self
-            .budget
-            .get()
-            .checked_sub(string.len() + STRING_OVERHEAD);
-        self.budget.set(left.unwrap_or(0));
-        left.and(Some(string))
+        self.budget
+            .take(string.len() + STRING_OVERHEAD)
+            .then_some(string)
     }
 
     fn string_tables(&self, mut offset: i64, file_info_length: u16) -> Vec<StringTable> {
@@ -285,7 +278,7 @@ impl Pe {
         let Some(resources) = &self.resources else {
             return version;
         };
-        let budget = Cell::new(VERSION_BUDGET);
+        let budget = ByteBudget::new(VERSION_BUDGET);
         for entry in &resources.entries {
             if entry.name_field & 0xFFFF != RT_VERSION {
                 continue;
@@ -310,7 +303,7 @@ impl Pe {
         &self,
         data: &[u8],
         leaf: &ResourceData,
-        budget: &Cell<usize>,
+        budget: &ByteBudget,
         out: &mut Version,
     ) {
         let base = leaf.offset_to_data as i64;
