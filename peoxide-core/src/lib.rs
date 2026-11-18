@@ -1,4 +1,6 @@
 mod address;
+mod bound;
+pub use bound::{BoundForwarderRef, BoundImportDescriptor};
 mod checksum;
 mod debug;
 pub use debug::{DebugDirectory, DebugEntry};
