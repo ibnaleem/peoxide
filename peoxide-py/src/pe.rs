@@ -5,7 +5,7 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyList, PyTuple};
 
 use crate::directories::{
-    BaseRelocationData, DebugData, ExportDirData, ImportDescData, RichHeader,
+    BaseRelocationData, BoundImportDescData, DebugData, ExportDirData, ImportDescData, RichHeader,
 };
 use crate::flags::{DLL_CHARACTERISTICS_FLAGS, IMAGE_FILE_FLAGS, SECTION_FLAGS, with_flags};
 use crate::headers::{DosHeader, FileHeader, NtHeaders, OptionalHeader};
@@ -73,6 +73,7 @@ pub(crate) struct PE {
     #[pyo3(get)]
     RICH_HEADER: Option<Py<RichHeader>>,
     relocations: PyOnceLock<Py<PyList>>,
+    bound_imports: PyOnceLock<Py<PyList>>,
     resources: PyOnceLock<Option<Py<ResourceDirData>>>,
     version: VersionLists,
     pe: peoxide_core::Pe,
@@ -154,6 +155,7 @@ impl PE {
                 .map(|r| Py::new(py, RichHeader::new(py, r)?))
                 .transpose()?,
             relocations: PyOnceLock::new(),
+            bound_imports: PyOnceLock::new(),
             resources: PyOnceLock::new(),
             version: VersionLists::new(py, &pe.version)?,
             pe,
@@ -281,6 +283,17 @@ impl PE {
             .get_or_try_init(py, || {
                 let blocks = no_panic(|| self.pe.parse_relocations(self.data.as_bytes(py)))?;
                 list(py, &blocks, BaseRelocationData::new)
+            })
+            .map(|l| l.clone_ref(py))
+    }
+
+    /// Bound import descriptors, empty when the file has none. Built on first access.
+    #[getter]
+    fn DIRECTORY_ENTRY_BOUND_IMPORT(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
+        self.bound_imports
+            .get_or_try_init(py, || {
+                let descriptors = no_panic(|| self.pe.parse_bound_imports(self.data.as_bytes(py)))?;
+                list(py, &descriptors, BoundImportDescData::new)
             })
             .map(|l| l.clone_ref(py))
     }
