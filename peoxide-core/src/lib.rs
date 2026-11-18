@@ -8,7 +8,7 @@ mod imports;
 mod ordinals;
 mod reloc;
 mod resource;
-pub use reloc::{Relocation, RelocationBlock};
+pub use reloc::{Relocation, RelocationBlock, RelocationFormat};
 pub use resource::{ResourceChild, ResourceData, ResourceDirectory, ResourceEntry};
 mod rich;
 mod version;

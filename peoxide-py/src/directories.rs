@@ -1,5 +1,8 @@
+use peoxide_core::RelocationFormat;
 use pyo3::IntoPyObjectExt;
+use pyo3::exceptions::PyAttributeError;
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyList};
 
 use crate::flags::{EX_DLL_CHARACTERISTICS_FLAGS, with_flags};
@@ -163,20 +166,85 @@ py_class!(BaseRelocation from peoxide_core::RelocationBlock as (py, c) {
     SizeOfBlock: u32 = c.size_of_block,
 });
 
-#[pyclass(frozen, get_all, module = "peoxide")]
+py_class!(BaseRelocationEntry from u32 as (py, c) {
+    Data: u32 = *c,
+});
+
+py_class!(ImportControlTransferDynamicRelocation from u32 as (py, c) {
+    PageRelativeOffset: u32 = *c & 0xFFF,
+    IndirectCall: u32 = (*c >> 12) & 1,
+    IATIndex: u32 = *c >> 13,
+});
+
+py_class!(IndirControlTransferDynamicRelocation from u32 as (py, c) {
+    PageRelativeOffset: u32 = *c & 0xFFF,
+    IndirectCall: u32 = (*c >> 12) & 1,
+    RexWPrefix: u32 = (*c >> 13) & 1,
+    CfgCheck: u32 = (*c >> 14) & 1,
+    Reserved: u32 = (*c >> 15) & 1,
+});
+
+py_class!(SwitchtableBranchDynamicRelocation from u32 as (py, c) {
+    PageRelativeOffset: u32 = *c & 0xFFF,
+    RegisterNumber: u32 = (*c >> 12) & 0xF,
+});
+
+#[pyclass(frozen, module = "peoxide")]
 struct RelocationData {
-    r#type: u16,
+    data: u32,
+    format: RelocationFormat,
+    #[pyo3(get)]
     rva: u64,
+    #[pyo3(get)]
     base_rva: u32,
+    /// Built on first access: a large image has tens of thousands of entries, and building
+    /// a second object for each would double the cost of `DIRECTORY_ENTRY_BASERELOC`.
+    structure: PyOnceLock<Py<PyAny>>,
+}
+
+#[pymethods]
+impl RelocationData {
+    /// Only on base relocation entries, as in pefile; the dynamic relocation bitfield
+    /// formats raise AttributeError.
+    #[getter]
+    fn r#type(&self) -> PyResult<u32> {
+        match self.format {
+            RelocationFormat::Base => Ok(self.data >> 12),
+            _ => Err(PyAttributeError::new_err("type")),
+        }
+    }
+
+    #[getter]
+    fn r#struct(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let data = &self.data;
+        self.structure
+            .get_or_try_init(py, || match self.format {
+                RelocationFormat::Base => BaseRelocationEntry::new(py, data)?.into_py_any(py),
+                RelocationFormat::ImportControlTransfer => {
+                    ImportControlTransferDynamicRelocation::new(py, data)?.into_py_any(py)
+                }
+                RelocationFormat::IndirControlTransfer => {
+                    IndirControlTransferDynamicRelocation::new(py, data)?.into_py_any(py)
+                }
+                RelocationFormat::SwitchtableBranch => {
+                    SwitchtableBranchDynamicRelocation::new(py, data)?.into_py_any(py)
+                }
+            })
+            .map(|s| s.clone_ref(py))
+    }
 }
 
 py_class!(BaseRelocationData from peoxide_core::RelocationBlock as (py, c) {
     r#struct: Py<BaseRelocation> = Py::new(py, BaseRelocation::new(py, c)?)?,
     entries: Py<PyList> = PyList::new(
         py,
-        c.entries
-            .iter()
-            .map(|e| RelocationData { r#type: e.reloc_type, rva: e.rva, base_rva: c.virtual_address }),
+        c.entries.iter().map(|e| RelocationData {
+            data: e.data,
+            format: c.format,
+            rva: e.rva,
+            base_rva: c.virtual_address,
+            structure: PyOnceLock::new(),
+        }),
     )?
     .unbind(),
 });
