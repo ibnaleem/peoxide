@@ -126,11 +126,18 @@ impl Section {
         no_panic(|| self.layout.contains_offset(&self.table, offset.0))
     }
 
-    fn get_offset_from_rva(&self, rva: i64) -> PyResult<i64> {
-        no_panic(|| self.layout.offset_from_rva(rva))
+    /// pefile's arithmetic done on the Python value, so an RVA beyond 64 bits maps exactly.
+    fn get_offset_from_rva<'py>(&self, rva: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let _: SaturatingI64 = rva.extract()?; // TypeError for anything but an integer
+        rva.sub(self.layout.virtual_address)?
+            .add(self.layout.pointer_to_raw_data)
     }
 
-    fn get_rva_from_offset(&self, offset: i64) -> PyResult<i64> {
-        no_panic(|| self.layout.rva_from_offset(offset))
+    /// The inverse of `get_offset_from_rva`, done the same way.
+    fn get_rva_from_offset<'py>(&self, offset: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let _: SaturatingI64 = offset.extract()?; // TypeError for anything but an integer
+        offset
+            .sub(self.layout.pointer_to_raw_data)?
+            .add(self.layout.virtual_address)
     }
 }
