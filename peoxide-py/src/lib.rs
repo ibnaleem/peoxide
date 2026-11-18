@@ -39,6 +39,7 @@ macro_rules! py_class {
 }
 
 mod directories;
+mod exception;
 mod flags;
 mod headers;
 mod pe;

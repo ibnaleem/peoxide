@@ -7,6 +7,7 @@ use pyo3::types::{PyBytes, PyList, PyTuple};
 use crate::directories::{
     BaseRelocationData, DebugData, ExportDirData, ImportDescData, RichHeader,
 };
+use crate::exception::exception_entries;
 use crate::flags::{DLL_CHARACTERISTICS_FLAGS, IMAGE_FILE_FLAGS, SECTION_FLAGS, with_flags};
 use crate::headers::{DosHeader, FileHeader, NtHeaders, OptionalHeader};
 use crate::resource::ResourceDirData;
@@ -73,6 +74,7 @@ pub(crate) struct PE {
     #[pyo3(get)]
     RICH_HEADER: Option<Py<RichHeader>>,
     relocations: PyOnceLock<Py<PyList>>,
+    exceptions: PyOnceLock<Py<PyList>>,
     resources: PyOnceLock<Option<Py<ResourceDirData>>>,
     version: VersionLists,
     pe: peoxide_core::Pe,
@@ -154,6 +156,7 @@ impl PE {
                 .map(|r| Py::new(py, RichHeader::new(py, r)?))
                 .transpose()?,
             relocations: PyOnceLock::new(),
+            exceptions: PyOnceLock::new(),
             resources: PyOnceLock::new(),
             version: VersionLists::new(py, &pe.version)?,
             pe,
@@ -281,6 +284,18 @@ impl PE {
             .get_or_try_init(py, || {
                 let blocks = no_panic(|| self.pe.parse_relocations(self.data.as_bytes(py)))?;
                 list(py, &blocks, BaseRelocationData::new)
+            })
+            .map(|l| l.clone_ref(py))
+    }
+
+    /// RUNTIME_FUNCTION entries with their unwind information, empty when the file has none
+    /// or is not AMD64 or IA64. Built on first access.
+    #[getter]
+    fn DIRECTORY_ENTRY_EXCEPTION(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
+        self.exceptions
+            .get_or_try_init(py, || {
+                let exceptions = no_panic(|| self.pe.parse_exceptions(self.data.as_bytes(py)))?;
+                exception_entries(py, &exceptions)
             })
             .map(|l| l.clone_ref(py))
     }
