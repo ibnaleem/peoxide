@@ -16,6 +16,8 @@ SYSTEM = [
     WINDIR / "System32" / "notepad.exe",
     WINDIR / "System32" / "drivers" / "ntfs.sys",
     WINDIR / "SysWOW64" / "kernel32.dll",
+    # The only file in System32, SysWOW64 or Program Files found with bound imports.
+    WINDIR / "SysWOW64" / "mfc40u.dll",
 ]
 SYSTEM = [p for p in SYSTEM if p.exists()]
 CORPUS = SYSTEM + sorted(p for p in (Path(__file__).parent / "fixtures").iterdir() if p.is_file())
@@ -413,6 +415,51 @@ def test_relocations(pair):
 
 def test_corpus_has_relocations():
     assert any(peoxide.PE(str(p)).DIRECTORY_ENTRY_BASERELOC for p in CORPUS)
+
+
+BOUND_FIELDS = ["TimeDateStamp", "OffsetModuleName", "NumberOfModuleForwarderRefs"]
+BOUND_REF_FIELDS = ["TimeDateStamp", "OffsetModuleName", "Reserved"]
+
+
+def bound_imports(pe):
+    return [
+        (
+            [getattr(d.struct, f) for f in BOUND_FIELDS],
+            d.name,
+            [([getattr(r.struct, f) for f in BOUND_REF_FIELDS], r.name) for r in d.entries],
+        )
+        for d in getattr(pe, "DIRECTORY_ENTRY_BOUND_IMPORT", [])
+    ]
+
+
+def test_bound_imports(pair):
+    ours, theirs = pair
+    assert bound_imports(ours) == bound_imports(theirs)
+
+
+def test_corpus_has_bound_imports():
+    assert any(
+        d.entries for p in CORPUS for d in peoxide.PE(str(p)).DIRECTORY_ENTRY_BOUND_IMPORT
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["bound_huge_count.dll", "bound_bad_names.dll", "bound_name_outside.dll", "bound_truncated.dll", "bound_in_section.dll"],
+)
+def test_malformed_bound_imports_match_pefile(name):
+    path = str(Path(__file__).parent / "fixtures" / "crafted" / name)
+    assert bound_imports(peoxide.PE(path)) == bound_imports(pefile.PE(path))
+
+
+def test_bound_imports_need_fourteen_directories_like_pefile():
+    # pefile reaches the delay-import directory (13) first and stops when it is missing.
+    data = bytearray((Path(__file__).parent / "fixtures" / "bound_imports.dll").read_bytes())
+    count = peoxide.PE(data=bytes(data)).DOS_HEADER.e_lfanew + 24 + 108
+    data[count : count + 4] = (13).to_bytes(4, "little")
+    ours, theirs = peoxide.PE(data=bytes(data)), pefile.PE(data=bytes(data))
+    assert len(ours.OPTIONAL_HEADER.DATA_DIRECTORY) == len(theirs.OPTIONAL_HEADER.DATA_DIRECTORY) == 13
+    assert ours.DIRECTORY_ENTRY_BOUND_IMPORT == bound_imports(theirs) == []
 
 
 RESOURCE_DIR_FIELDS = ["Characteristics", "TimeDateStamp", "MajorVersion", "MinorVersion", "NumberOfNamedEntries", "NumberOfIdEntries"]

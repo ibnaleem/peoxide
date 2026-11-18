@@ -95,6 +95,8 @@ def test_random_corruption_never_crashes():
             pos = rng.randrange(0x400 if hot else len(data))
             data[pos] = rng.randrange(256)
         try:
-            peoxide.PE(data=bytes(data))
+            pe = peoxide.PE(data=bytes(data))
         except peoxide.PEFormatError:
-            pass
+            continue
+        # Built on first access, so PE() alone never parses them.
+        pe.DIRECTORY_ENTRY_BOUND_IMPORT
