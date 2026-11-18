@@ -258,6 +258,10 @@ def crafted():
 
     huge_count = resource_root(struct.pack("<2I4H", 0, 0, 0, 0, 0xFFFF, 0xFFFF))
     self_reference = resource_root(struct.pack("<2I4H2I", 0, 0, 0, 0, 0, 1, RT_VERSION, 0x80000000))
+    leaf = 16 + 8 * 40
+    long_name = struct.pack("<2I4H", 0, 0, 0, 0, 40, 0) + struct.pack("<2I", 0x80000000 | leaf + 16, leaf) * 40
+    long_name += struct.pack("<4IH", 0x2000, 4, 0, 0, 0xFFFF) + b"A\0" * 0xFFFF
+    shared_resource_names = resource_root(long_name)
     reloc_block = struct.pack("<2I2H", TEXT_RVA, 12, 0xA000, 0)
     long_relocations = [
         (b".text", CODE, code),
@@ -301,6 +305,8 @@ def crafted():
         "huge_count.dll": build(AMD64, True, 0x2022, GUI, huge_count),
         # The resource root's only entry is the root itself.
         "self_reference.dll": build(AMD64, True, 0x2022, GUI, self_reference),
+        # 40 named resource entries share one 65,535-unit name: 5 MiB of names if all kept.
+        "shared_resource_names.dll": build(AMD64, True, 0x2022, GUI, shared_resource_names),
         # Import addresses (ImageBase + RVA) run past 2**64 and past 2**63.
         "top_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0xFFFFFFFFFFFFF000),
         "signed_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0x7FFFFFFFFFFFF000),

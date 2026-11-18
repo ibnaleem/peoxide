@@ -301,78 +301,19 @@ impl Pe {
 mod tests {
     use super::*;
 
-    const SECTION_RVA: u32 = 0x1000;
-    const HEADERS_SIZE: usize = 0x200;
-
-    fn put(buf: &mut [u8], at: usize, bytes: &[u8]) {
-        buf[at..at + bytes.len()].copy_from_slice(bytes);
-    }
-
-    /// A one-section PE32+ whose section holds `resources` as the resource directory.
-    fn pe_with_resources(resources: &[u8]) -> Vec<u8> {
-        let raw = resources.len().next_multiple_of(0x200) as u32;
-        let size_of_image = (SECTION_RVA + raw).next_multiple_of(0x1000);
-        let (nt, opt) = (0x40, 0x58);
-        let (directory, section) = (opt + 112 + 8 * RESOURCE_DIRECTORY, opt + 240);
-        let mut pe = vec![0; HEADERS_SIZE];
-        let fields: [(usize, &[u8]); 22] = [
-            (0, b"MZ"),
-            (0x3C, &(nt as u32).to_le_bytes()),
-            (nt, b"PE\0\0"),
-            (nt + 4, &0x8664u16.to_le_bytes()),
-            (nt + 6, &1u16.to_le_bytes()),
-            (nt + 20, &240u16.to_le_bytes()),
-            (nt + 22, &0x2022u16.to_le_bytes()),
-            (opt, &0x20Bu16.to_le_bytes()),
-            (opt + 24, &0x1_8000_0000u64.to_le_bytes()),
-            (opt + 32, &0x1000u32.to_le_bytes()),
-            (opt + 36, &0x200u32.to_le_bytes()),
-            (opt + 56, &size_of_image.to_le_bytes()),
-            (opt + 60, &(HEADERS_SIZE as u32).to_le_bytes()),
-            (opt + 108, &16u32.to_le_bytes()),
-            (directory, &SECTION_RVA.to_le_bytes()),
-            (directory + 4, &(resources.len() as u32).to_le_bytes()),
-            (section, b".rsrc"),
-            (section + 8, &raw.to_le_bytes()),
-            (section + 12, &SECTION_RVA.to_le_bytes()),
-            (section + 16, &raw.to_le_bytes()),
-            (section + 20, &(HEADERS_SIZE as u32).to_le_bytes()),
-            (section + 36, &0x4000_0040u32.to_le_bytes()),
-        ];
-        for (at, bytes) in fields {
-            put(&mut pe, at, bytes);
-        }
-        pe.extend_from_slice(resources);
-        pe.resize(HEADERS_SIZE + raw as usize, 0);
-        pe
-    }
-
     #[test]
     fn names_sharing_one_string_stay_within_the_name_budget() {
-        const UNITS: usize = 0xFFFF;
-        let count = MAX_NAME_BYTES / UNITS + 2;
-        let leaf = DIRECTORY_HEADER_SIZE as usize + count * ENTRY_SIZE as usize;
-        let name = leaf + DATA_ENTRY_SIZE as usize;
-        let mut resources = [0u32, 0, 0].map(u32::to_le_bytes).concat();
-        resources.extend_from_slice(&(count as u16).to_le_bytes());
-        resources.extend_from_slice(&0u16.to_le_bytes());
-        for _ in 0..count {
-            resources.extend_from_slice(&(0x8000_0000 | name as u32).to_le_bytes());
-            resources.extend_from_slice(&(leaf as u32).to_le_bytes());
-        }
-        resources.extend_from_slice(&[0x2000u32, 4, 0, 0].map(u32::to_le_bytes).concat());
-        resources.extend_from_slice(&(UNITS as u16).to_le_bytes());
-        resources.extend(b"A\0".repeat(UNITS));
-
-        let data = pe_with_resources(&resources);
-        let root = crate::parse(&data).unwrap().resources.unwrap();
+        // 40 entries name the same 65,535-unit string: 5 MiB of UTF-16 if all were read.
+        let data = include_bytes!("../../tests/fixtures/crafted/shared_resource_names.dll");
+        let root = crate::parse(data).unwrap().resources.unwrap();
         let names: Vec<_> = root
             .entries
             .iter()
             .filter_map(|e| e.name.clone()?)
             .collect();
-        assert_eq!(names[0], vec![b'A'; UNITS], "a long name is kept whole");
-        let retained: usize = names.iter().map(Vec::len).sum();
-        assert!(retained <= MAX_NAME_BYTES, "{retained} name bytes retained");
+        assert_eq!(names[0], vec![b'A'; 0xFFFF], "a long name is kept whole");
+        assert!(names.len() < 40, "all {} names kept", names.len());
+        let read = 2 * names.iter().map(Vec::len).sum::<usize>();
+        assert!(read <= MAX_NAME_BYTES, "{read} name bytes read");
     }
 }
