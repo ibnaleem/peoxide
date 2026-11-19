@@ -687,8 +687,8 @@ fn uint_from_data(
         python_index(index * size_i),
         python_index((index + 1) * size_i),
     );
-    let read = |bytes: &[u8]| {
-        let chunk = bytes.get(start..end.max(start)).unwrap_or_default();
+    let end = end.max(start);
+    let read = |chunk: &[u8]| {
         (chunk.len() == size).then(|| {
             chunk
                 .iter()
@@ -697,11 +697,18 @@ fn uint_from_data(
         })
     };
     let value = match data.cast::<PyBytes>() {
-        Ok(bytes) => read(bytes.as_bytes()),
+        Ok(bytes) => read(bytes.as_bytes().get(start..end).unwrap_or_default()),
         Err(_) => {
-            let buffer = PyBuffer::<u8>::get(data)
+            PyBuffer::<u8>::get(data)
                 .map_err(|_| PyTypeError::new_err("a bytes-like object is required"))?;
-            read(&buffer.to_vec(data.py())?)
+            // Copy only the slice read: a whole-buffer copy made each call O(len).
+            let py = data.py();
+            let slice = data.get_item(PySlice::new(py, start as isize, end as isize, 1))?;
+            let chunk = py
+                .get_type::<PyBytes>()
+                .call1((slice,))?
+                .cast_into::<PyBytes>()?;
+            read(chunk.as_bytes())
         }
     };
     match value {
