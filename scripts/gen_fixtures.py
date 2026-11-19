@@ -99,15 +99,17 @@ def delay_imports(section, dll, names, count=1):
     return section.put(descriptors), len(descriptors)
 
 
-def exports(section, dll, functions, named, base=1):
-    """Ordinals start at `base`. Functions left out of `named` are exported by ordinal only."""
+def exports(section, dll, functions, named, base=1, count=None):
+    """Ordinals start at `base`. Functions left out of `named` are exported by ordinal only.
+    `count` overrides NumberOfFunctions."""
     eat = section.put(b"".join(struct.pack("<I", rva) for rva in functions))
     name_rvas = [section.put(name + b"\0", 1) for name, _ in named]
     names = section.put(b"".join(struct.pack("<I", rva) for rva in name_rvas))
     ordinals = section.put(b"".join(struct.pack("<H", index) for _, index in named))
     dll_name = section.put(dll + b"\0", 1)
     directory = struct.pack(
-        "<2I2H7I", 0, 0, 0, 0, dll_name, base, len(functions), len(named), eat, names, ordinals
+        "<2I2H7I",
+        *[0, 0, 0, 0, dll_name, base, count or len(functions), len(named), eat, names, ordinals],
     )
     return section.put(directory), len(directory)
 
@@ -244,9 +246,25 @@ def fixtures():
             },
         ),
     ]
+    # NumberOfFunctions is larger than the file. pefile reads the address table to the end of
+    # its section, so the bytes after it become ordinal-only exports.
+    huge_export_count = [
+        (b".text", CODE, code),
+        (
+            b".rdata",
+            DATA,
+            lambda s: {
+                DIR_EXPORT: exports(
+                    s, b"huge_export_count.dll", [TEXT_RVA, TEXT_RVA + 4], [(b"Alpha", 0)], count=0x7FFFFFFF
+                )
+            },
+        ),
+        (b".rsrc", DATA, lambda s: {DIR_RESOURCE: resources(s)}),
+    ]
     return {
         "sample64.dll": build(AMD64, True, 0x2022, GUI, dll),
         "high_ordinal_base.dll": build(AMD64, True, 0x2022, GUI, high_ordinal_base),
+        "huge_export_count.dll": build(AMD64, True, 0x2022, GUI, huge_export_count),
         "sample32.exe": build(I386, False, 0x0102, CUI, exe),
         "driver.sys": build(AMD64, True, 0x0022, NATIVE, driver),
         **{f"crafted/{name}": data for name, data in crafted().items()},
