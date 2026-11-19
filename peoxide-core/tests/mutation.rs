@@ -8,7 +8,7 @@ use peoxide_core::{Pe, clamp, entropy, parse};
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 
-const FIXTURES: [&[u8]; 6] = [
+const FIXTURES: [&[u8]; 7] = [
     // Load config with every kind of dynamic relocation, in PE32+ and PE32.
     include_bytes!("../../tests/fixtures/load_config64.dll"),
     include_bytes!("../../tests/fixtures/load_config32.dll"),
@@ -17,6 +17,8 @@ const FIXTURES: [&[u8]; 6] = [
     include_bytes!("../../tests/fixtures/driver.sys"),
     // The only seed with delay imports, and with import tables near pefile's symbol cap.
     include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll"),
+    // The only seed with bound imports.
+    include_bytes!("../../tests/fixtures/bound_imports.dll"),
 ];
 /// Share of edits aimed at the headers, section table and data directories.
 const HOT_EDIT_SHARE: f64 = 0.7;
@@ -85,6 +87,7 @@ fn exercise(pe: &Pe, data: &[u8]) {
     let _ = (pe.imphash_input(), pe.exphash_input());
     let _ = pe.parse_relocations(data);
     let _ = pe.parse_load_config(data);
+    let _ = pe.parse_bound_imports(data);
     let _ = pe.checksum(data);
     let rva = i64::from(pe.headers.optional_header.address_of_entry_point);
     let _ = (

@@ -3,7 +3,12 @@
 //! Offsets are relative to the resource's data and aligned with pefile's `dword_align`,
 //! including its 32-bit mask. Where an offset wraps past 4 GiB, pefile's loops can spin
 //! forever; each walk here stops instead once its offset stops moving forward.
+//!
+//! Blocks in a crafted resource can overlap, so that every block rereads the rest of the
+//! resource as its key: gigabytes from a small file. One budget per PE bounds the strings
+//! read here, and parsing stops where it runs out, unlike pefile.
 
+use crate::budget::ByteBudget;
 use crate::{Pe, ResourceChild, ResourceData};
 
 const RT_VERSION: u32 = 16;
@@ -12,6 +17,12 @@ const FIXED_FILE_INFO_SIZE: usize = 52;
 const VS_VERSION_INFO: &[u8] = b"VS_VERSION_INFO";
 /// pefile's default `max_length` for `get_string_u_at_rva`.
 const DEFAULT_MAX_UNITS: i64 = 1 << 16;
+/// Bytes of version strings one PE may read, each string charged its length plus
+/// `STRING_OVERHEAD`. The largest System32 or SysWOW64 file kept strings charging an
+/// estimated 64 KiB.
+const VERSION_BUDGET: usize = 16 << 20;
+/// What one more string costs beyond its bytes, so that empty keys are not free.
+const STRING_OVERHEAD: usize = 64;
 
 /// The `Length`, `ValueLength` and `Type` words that open every version block.
 #[derive(Clone, Copy)]
@@ -147,12 +158,18 @@ struct Block<'a> {
     data: &'a [u8],
     raw: &'a [u8],
     base: i64,
+    budget: &'a ByteBudget,
 }
 
 impl Block<'_> {
+    /// `None` once the PE's budget runs out, which ends every walk that reads strings.
     fn string(&self, offset: i64, max_units: i64) -> Option<Vec<u8>> {
-        self.pe
-            .utf16_string_at(self.data, self.base + offset, max_units)
+        let string = self
+            .pe
+            .utf16_string_at(self.data, self.base + offset, max_units)?;
+        self.budget
+            .take(string.len() + STRING_OVERHEAD)
+            .then_some(string)
     }
 
     fn string_tables(&self, mut offset: i64, file_info_length: u16) -> Vec<StringTable> {
@@ -261,6 +278,7 @@ impl Pe {
         let Some(resources) = &self.resources else {
             return version;
         };
+        let budget = ByteBudget::new(VERSION_BUDGET);
         for entry in &resources.entries {
             if entry.name_field & 0xFFFF != RT_VERSION {
                 continue;
@@ -274,14 +292,20 @@ impl Pe {
             };
             for language in &languages.entries {
                 if let ResourceChild::Data(leaf) = &language.child {
-                    self.version_information(data, leaf, &mut version);
+                    self.version_information(data, leaf, &budget, &mut version);
                 }
             }
         }
         version
     }
 
-    fn version_information(&self, data: &[u8], leaf: &ResourceData, out: &mut Version) {
+    fn version_information(
+        &self,
+        data: &[u8],
+        leaf: &ResourceData,
+        budget: &ByteBudget,
+        out: &mut Version,
+    ) {
         let base = leaf.offset_to_data as i64;
         let Some(start) = self.offset_from_rva(base) else {
             return;
@@ -292,6 +316,7 @@ impl Pe {
             data,
             raw,
             base,
+            budget,
         };
         let Some(header) = block_header(raw, 0) else {
             return;
@@ -413,5 +438,16 @@ mod tests {
             entry,
             &(b"Translation".to_vec(), "0x0409 0x04b0".to_string())
         );
+    }
+
+    #[test]
+    fn overlapping_blocks_keep_within_the_budget() {
+        // Kept in full, the fixture's FileInfo keys come to about 64 MiB.
+        let data = include_bytes!("../../tests/fixtures/crafted/overlapping_version.dll");
+        let pe = crate::parse(data).unwrap();
+        let file_info = pe.version.file_info.unwrap();
+        assert!(!file_info[0].is_empty());
+        let kept: usize = file_info.iter().flatten().map(|b| b.key.len()).sum();
+        assert!(kept <= VERSION_BUDGET, "kept {kept} bytes of keys");
     }
 }

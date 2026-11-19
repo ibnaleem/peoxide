@@ -98,6 +98,8 @@ def test_random_corruption_never_crashes():
             pe = peoxide.PE(data=bytes(data))
         except peoxide.PEFormatError:
             continue
+        # Built on first access, so PE() alone never parses them.
+        pe.DIRECTORY_ENTRY_BOUND_IMPORT
         read_lazy_directories(pe)
 
 

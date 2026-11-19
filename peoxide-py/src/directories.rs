@@ -161,6 +161,19 @@ py_class!(RichHeader from peoxide_core::RichHeader as (py, c) {
     clear_data: Py<PyBytes> = bytes(py, &c.clear_data),
 });
 
+py_class!(TlsDirectory from peoxide_core::TlsDirectory as (py, c) {
+    StartAddressOfRawData: u64 = c.start_address_of_raw_data,
+    EndAddressOfRawData: u64 = c.end_address_of_raw_data,
+    AddressOfIndex: u64 = c.address_of_index,
+    AddressOfCallBacks: u64 = c.address_of_callbacks,
+    SizeOfZeroFill: u32 = c.size_of_zero_fill,
+    Characteristics: u32 = c.characteristics,
+});
+
+py_class!(TlsData from peoxide_core::TlsDirectory as (py, c) {
+    r#struct: Py<TlsDirectory> = Py::new(py, TlsDirectory::new(py, c)?)?,
+});
+
 py_class!(BaseRelocation from peoxide_core::RelocationBlock as (py, c) {
     VirtualAddress: u32 = c.virtual_address,
     SizeOfBlock: u32 = c.size_of_block,
@@ -247,4 +260,27 @@ py_class!(BaseRelocationData from peoxide_core::RelocationBlock as (py, c) {
         }),
     )?
     .unbind(),
+});
+
+py_class!(BoundImportDescriptor from peoxide_core::BoundImportDescriptor as (py, c) {
+    TimeDateStamp: u32 = c.time_date_stamp,
+    OffsetModuleName: u16 = c.offset_module_name,
+    NumberOfModuleForwarderRefs: u16 = c.number_of_module_forwarder_refs,
+});
+
+py_class!(BoundForwarderRef from peoxide_core::BoundForwarderRef as (py, c) {
+    TimeDateStamp: u32 = c.time_date_stamp,
+    OffsetModuleName: u16 = c.offset_module_name,
+    Reserved: u16 = c.reserved,
+});
+
+py_class!(BoundImportRefData from peoxide_core::BoundForwarderRef as (py, c) {
+    r#struct: Py<BoundForwarderRef> = Py::new(py, BoundForwarderRef::new(py, c)?)?,
+    name: Py<PyBytes> = bytes(py, &c.name),
+});
+
+py_class!(BoundImportDescData from peoxide_core::BoundImportDescriptor as (py, c) {
+    r#struct: Py<BoundImportDescriptor> = Py::new(py, BoundImportDescriptor::new(py, c)?)?,
+    name: Py<PyBytes> = bytes(py, &c.name),
+    entries: Py<PyList> = list(py, &c.entries, BoundImportRefData::new)?,
 });

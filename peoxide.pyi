@@ -260,6 +260,19 @@ class _RichHeader:
     clear_data: bytes
 
 @final
+class _TlsDirectory:
+    StartAddressOfRawData: int
+    EndAddressOfRawData: int
+    AddressOfIndex: int
+    AddressOfCallBacks: int
+    SizeOfZeroFill: int
+    Characteristics: int
+
+@final
+class _TlsData:
+    struct: _TlsDirectory
+
+@final
 class _BaseRelocation:
     VirtualAddress: int
     SizeOfBlock: int
@@ -415,6 +428,29 @@ class _LoadConfigData:
     def dynamic_relocations(self) -> list[_DynamicRelocationData | _FunctionOverrideData] | None: ...
 
 @final
+class _BoundImportDescriptor:
+    TimeDateStamp: int
+    OffsetModuleName: int
+    NumberOfModuleForwarderRefs: int
+
+@final
+class _BoundForwarderRef:
+    TimeDateStamp: int
+    OffsetModuleName: int
+    Reserved: int
+
+@final
+class _BoundImportRefData:
+    struct: _BoundForwarderRef
+    name: bytes
+
+@final
+class _BoundImportDescData:
+    struct: _BoundImportDescriptor
+    name: bytes
+    entries: list[_BoundImportRefData]
+
+@final
 class _ResourceDirectoryStruct:
     Characteristics: int
     TimeDateStamp: int
@@ -525,6 +561,7 @@ class PE:
     sections: list[_Section]
     DIRECTORY_ENTRY_DEBUG: list[_DebugData]
     RICH_HEADER: _RichHeader | None
+    DIRECTORY_ENTRY_TLS: _TlsData | None
     def __new__(
         cls,
         name: str | os.PathLike[str] | None = None,
@@ -539,6 +576,8 @@ class PE:
     def DIRECTORY_ENTRY_DELAY_IMPORT(self) -> list[_ImportDescData]: ...
     @property
     def DIRECTORY_ENTRY_BASERELOC(self) -> list[_BaseRelocationData]: ...
+    @property
+    def DIRECTORY_ENTRY_BOUND_IMPORT(self) -> list[_BoundImportDescData]: ...
     @property
     def DIRECTORY_ENTRY_RESOURCE(self) -> _ResourceDirData | None: ...
     @property

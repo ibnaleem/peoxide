@@ -20,6 +20,7 @@ SAMPLES = [
     FIXTURES / "sample32.exe",
     # Every kind of dynamic relocation.
     FIXTURES / "load_config64.dll",
+    FIXTURES / "bound_imports.dll",
 ]
 
 
@@ -65,9 +66,10 @@ def runtime_classes():
             names.add(name)
             walk(value)
 
-    for path in SAMPLES:
-        if path.exists():
-            walk(peoxide.PE(str(path)))
+    # Held until the walk ends, so a freed object's id cannot be reused and look already seen.
+    pes = [peoxide.PE(str(path)) for path in SAMPLES if path.exists()]
+    for pe in pes:
+        walk(pe)
     found.pop("PE", None)
     return found
 

@@ -26,9 +26,12 @@ DIRECTORIES = [
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BASERELOC"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_TLS"],
 ]
 DEBUG_FIELDS = ["Characteristics", "TimeDateStamp", "Type", "SizeOfData", "PointerToRawData"]
 CODEVIEW_FIELDS = ["Signature_String", "Age", "PdbFileName", "CvHeaderSignature", "Signature"]
+TLS_FIELDS = [entry.split(",")[1] for entry in pefile.PE.__IMAGE_TLS_DIRECTORY_format__[1]]
 
 
 def summarize(pe, export_limit=None):
@@ -114,7 +117,17 @@ def details(pe, rvas, offsets):
         ],
         "relocations": relocation_blocks(getattr(pe, "DIRECTORY_ENTRY_BASERELOC", [])),
         "load config": load_config(pe),
+        "bound imports": [
+            (
+                d.struct.TimeDateStamp,
+                d.struct.NumberOfModuleForwarderRefs,
+                d.name,
+                [(r.struct.TimeDateStamp, r.name) for r in d.entries],
+            )
+            for d in getattr(pe, "DIRECTORY_ENTRY_BOUND_IMPORT", [])
+        ],
         "rich header": rich_header(pe),
+        "tls": tls(pe),
         "resources": resource_tree(getattr(pe, "DIRECTORY_ENTRY_RESOURCE", None)),
         "version info": version_info(pe),
     }
@@ -175,6 +188,9 @@ def load_config(pe):
         return header, functions, [fields(b.struct, ["Left", "Right", "Value"]) for b in d.bdd_relocs]
 
     return fields(config.struct, LOAD_CONFIG_FIELDS), dynamic and [relocation(d) for d in dynamic]
+def tls(pe):
+    entry = getattr(pe, "DIRECTORY_ENTRY_TLS", None)
+    return entry and [getattr(entry.struct, f) for f in TLS_FIELDS]
 
 
 def resource_tree(directory):

@@ -1,4 +1,7 @@
 mod address;
+mod bound;
+pub use bound::{BoundForwarderRef, BoundImportDescriptor};
+mod budget;
 mod checksum;
 mod debug;
 pub use debug::{DebugDirectory, DebugEntry};
@@ -15,6 +18,8 @@ mod resource;
 pub use reloc::{Relocation, RelocationBlock, RelocationFormat};
 pub use resource::{ResourceChild, ResourceData, ResourceDirectory, ResourceEntry};
 mod rich;
+mod tls;
+pub use tls::TlsDirectory;
 mod version;
 pub use address::{SectionLayout, clamp, entropy, uint_at_offset};
 pub use goblin::error::Error;
@@ -48,6 +53,8 @@ pub struct Pe {
     pub rich_header: Option<RichHeader>,
     /// `None` where pefile leaves `DIRECTORY_ENTRY_RESOURCE` undefined.
     pub resources: Option<ResourceDirectory>,
+    /// `None` where pefile leaves `DIRECTORY_ENTRY_TLS` undefined.
+    pub tls: Option<TlsDirectory>,
     pub version: Version,
 }
 
@@ -140,12 +147,14 @@ pub fn parse(data: &[u8]) -> Result<Pe, Error> {
         debug: Vec::new(),
         rich_header: rich::parse(data, optional_header_offset),
         resources: None,
+        tls: None,
         version: Version::default(),
     };
     // These directories are read through RVAs, which need the section layouts above.
     (pe.imports, pe.delay_imports) = pe.parse_import_directories(data);
     pe.debug = pe.parse_debug_directory(data);
     pe.resources = pe.parse_resources(data);
+    pe.tls = pe.parse_tls(data);
     pe.version = pe.parse_version(data);
     Ok(pe)
 }
@@ -429,7 +438,7 @@ mod tests {
 
     #[test]
     fn crafted_fixtures_parse_without_panicking() {
-        let crafted: [&[u8]; 11] = [
+        let crafted: [&[u8]; 20] = [
             include_bytes!("../../tests/fixtures/crafted/load_config_short_size.dll"),
             include_bytes!("../../tests/fixtures/crafted/load_config_odd_size.dll"),
             include_bytes!("../../tests/fixtures/crafted/load_config_long_table.dll"),
@@ -441,12 +450,22 @@ mod tests {
             include_bytes!("../../tests/fixtures/crafted/top_image_base.dll"),
             include_bytes!("../../tests/fixtures/crafted/signed_image_base.dll"),
             include_bytes!("../../tests/fixtures/crafted/long_relocations.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_huge_count.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_bad_names.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_name_outside.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_truncated.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_in_section.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_shared_names.dll"),
+            include_bytes!("../../tests/fixtures/crafted/tls_size_zero.dll"),
+            include_bytes!("../../tests/fixtures/crafted/tls_outside_sections.dll"),
+            include_bytes!("../../tests/fixtures/crafted/overlapping_version.dll"),
         ];
         // Ok or Err are both fine; only a panic fails.
         for data in crafted {
             if let Ok(pe) = parse(data) {
                 let _ = pe.parse_relocations(data);
                 let _ = pe.parse_load_config(data);
+                let _ = pe.parse_bound_imports(data);
             }
         }
     }

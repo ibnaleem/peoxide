@@ -16,6 +16,11 @@ SYSTEM = [
     WINDIR / "System32" / "notepad.exe",
     WINDIR / "System32" / "drivers" / "ntfs.sys",
     WINDIR / "SysWOW64" / "kernel32.dll",
+    # The only file in System32, SysWOW64 or Program Files found with bound imports.
+    WINDIR / "SysWOW64" / "mfc40u.dll",
+    # The ones above have no TLS directory.
+    WINDIR / "System32" / "msvcrt.dll",
+    WINDIR / "SysWOW64" / "msvcrt.dll",
 ]
 SYSTEM = [p for p in SYSTEM if p.exists()]
 CORPUS = SYSTEM + sorted(p for p in (Path(__file__).parent / "fixtures").iterdir() if p.is_file())
@@ -254,6 +259,31 @@ def test_section_contains(pair):
             assert mine.contains_offset(offset) == ref.contains_offset(offset), (mine.Name, hex(offset))
 
 
+@pytest.mark.parametrize("value", [2**64, 2**70, -(2**64)])
+def test_addresses_beyond_64_bits_follow_pefile(pair, value):
+    ours, theirs = pair
+    for method in ("get_data", "get_offset_from_rva", "get_rva_from_offset"):
+        mine, ref = outcome(getattr(ours, method), value), outcome(getattr(theirs, method), value)
+        assert mine == ref, method
+    assert ours.get_data(0x40, value) == theirs.get_data(0x40, value)
+    for method in ("get_section_by_rva", "get_section_by_offset"):
+        assert getattr(ours, method)(value) is getattr(theirs, method)(value) is None, method
+    for mine, ref in zip(ours.sections, theirs.sections):
+        assert mine.get_data(value) == ref.get_data(value), mine.Name
+        va = ref.VirtualAddress
+        assert mine.get_data(va, value) == ref.get_data(va, value), mine.Name
+        for method in ("contains_rva", "contains", "contains_offset"):
+            assert getattr(mine, method)(value) == getattr(ref, method)(value), (mine.Name, method)
+        for method in ("get_offset_from_rva", "get_rva_from_offset"):
+            assert getattr(mine, method)(value) == getattr(ref, method)(value), (mine.Name, method)
+
+
+@pytest.mark.parametrize("rva, length", [(-5, 10), (-5, None), (-16, 8), (-1, 1)])
+def test_negative_rvas_slice_the_header_like_pefile(pair, rva, length):
+    ours, theirs = pair
+    assert ours.get_data(rva, length) == theirs.get_data(rva, length)
+
+
 def test_overlay(pair):
     ours, theirs = pair
     assert ours.get_overlay_data_start_offset() == theirs.get_overlay_data_start_offset()
@@ -441,6 +471,81 @@ def test_relocations(pair):
 
 def test_corpus_has_relocations():
     assert any(peoxide.PE(str(p)).DIRECTORY_ENTRY_BASERELOC for p in CORPUS)
+
+
+BOUND_FIELDS = ["TimeDateStamp", "OffsetModuleName", "NumberOfModuleForwarderRefs"]
+BOUND_REF_FIELDS = ["TimeDateStamp", "OffsetModuleName", "Reserved"]
+
+
+def bound_imports(pe):
+    return [
+        (
+            [getattr(d.struct, f) for f in BOUND_FIELDS],
+            d.name,
+            [([getattr(r.struct, f) for f in BOUND_REF_FIELDS], r.name) for r in d.entries],
+        )
+        for d in getattr(pe, "DIRECTORY_ENTRY_BOUND_IMPORT", [])
+    ]
+
+
+def test_bound_imports(pair):
+    ours, theirs = pair
+    assert bound_imports(ours) == bound_imports(theirs)
+
+
+def test_corpus_has_bound_imports():
+    assert any(
+        d.entries for p in CORPUS for d in peoxide.PE(str(p)).DIRECTORY_ENTRY_BOUND_IMPORT
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["bound_huge_count.dll", "bound_bad_names.dll", "bound_name_outside.dll", "bound_truncated.dll", "bound_in_section.dll"],
+)
+def test_malformed_bound_imports_match_pefile(name):
+    path = str(Path(__file__).parent / "fixtures" / "crafted" / name)
+    assert bound_imports(peoxide.PE(path)) == bound_imports(pefile.PE(path))
+
+
+def test_bound_imports_need_fourteen_directories_like_pefile():
+    # pefile reaches the delay-import directory (13) first and stops when it is missing.
+    data = bytearray((Path(__file__).parent / "fixtures" / "bound_imports.dll").read_bytes())
+    count = peoxide.PE(data=bytes(data)).DOS_HEADER.e_lfanew + 24 + 108
+    data[count : count + 4] = (13).to_bytes(4, "little")
+    ours, theirs = peoxide.PE(data=bytes(data)), pefile.PE(data=bytes(data))
+    assert len(ours.OPTIONAL_HEADER.DATA_DIRECTORY) == len(theirs.OPTIONAL_HEADER.DATA_DIRECTORY) == 13
+    assert ours.DIRECTORY_ENTRY_BOUND_IMPORT == bound_imports(theirs) == []
+TLS_FIELDS = [
+    "StartAddressOfRawData",
+    "EndAddressOfRawData",
+    "AddressOfIndex",
+    "AddressOfCallBacks",
+    "SizeOfZeroFill",
+    "Characteristics",
+]
+
+
+def tls(pe):
+    entry = getattr(pe, "DIRECTORY_ENTRY_TLS", None)
+    return entry and [getattr(entry.struct, f) for f in TLS_FIELDS]
+
+
+def test_tls(pair):
+    ours, theirs = pair
+    assert tls(ours) == tls(theirs)
+
+
+def test_corpus_has_tls():
+    system = [peoxide.PE(str(p)) for p in SYSTEM]
+    assert {pe.OPTIONAL_HEADER.Magic for pe in system if tls(pe)} == {0x10B, 0x20B}
+
+
+@pytest.mark.parametrize("name", ["tls_size_zero.dll", "tls_outside_sections.dll"])
+def test_crafted_tls_matches_pefile(name):
+    path = str(Path(__file__).parent / "fixtures" / "crafted" / name)
+    assert tls(peoxide.PE(path)) == tls(pefile.PE(path))
+    assert tls(peoxide.PE(path))
 
 
 RESOURCE_DIR_FIELDS = ["Characteristics", "TimeDateStamp", "MajorVersion", "MinorVersion", "NumberOfNamedEntries", "NumberOfIdEntries"]
