@@ -77,6 +77,13 @@ fn exercise(pe: &Pe, data: &[u8]) {
         pe.string_at_rva(data, rva, i64::MAX),
     );
     let _ = peoxide_core::uint_at_offset(data, usize::MAX, 8);
+    let _ = (
+        pe.utf16_string_at(data, rva, i64::MAX),
+        pe.resource_strings(),
+    );
+    for (_, range) in pe.memory_mapped_image(i64::MAX) {
+        let _ = &data[range];
+    }
     if let Some(offset) = pe.overlay_offset() {
         let _ = &data[offset..];
     }

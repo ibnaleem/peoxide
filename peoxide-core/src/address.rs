@@ -323,3 +323,91 @@ fn little_endian(bytes: &[u8], size: usize) -> Option<u64> {
             .fold(0, |value, &byte| (value << 8) | u64::from(byte))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::parse;
+    use crate::tests::DLL;
+
+    /// `DLL` with one field of section `index`'s table entry replaced.
+    fn patched(index: usize, field: usize, value: u32) -> Vec<u8> {
+        let pe = parse(DLL).unwrap();
+        let table = pe.headers.dos_header.e_lfanew as usize
+            + 24
+            + pe.headers.file_header.size_of_optional_header as usize;
+        let at = table + 40 * index + field;
+        let mut data = DLL.to_vec();
+        data[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        data
+    }
+
+    const VIRTUAL_ADDRESS: usize = 12;
+    const SIZE_OF_RAW_DATA: usize = 16;
+
+    #[test]
+    fn maps_the_headers_then_each_section_at_its_address() {
+        let pe = parse(DLL).unwrap();
+        assert_eq!(
+            pe.memory_mapped_image(0x1000_0000),
+            [
+                (0, 0..0x400),
+                (0x1000, 0x400..0x600),
+                (0x2000, 0x600..0x800),
+                (0x3000, 0x800..0xA00)
+            ]
+        );
+    }
+
+    #[test]
+    fn leaves_out_sections_at_or_above_the_limit() {
+        let pe = parse(DLL).unwrap();
+        assert_eq!(
+            pe.memory_mapped_image(0x2000),
+            [(0, 0..0x400), (0x1000, 0x400..0x600)]
+        );
+        assert_eq!(pe.memory_mapped_image(0), [(0, 0..0x400)]);
+        assert_eq!(pe.memory_mapped_image(i64::MIN), [(0, 0..0x400)]);
+    }
+
+    #[test]
+    fn a_section_at_the_same_aligned_address_replaces_the_previous_one() {
+        let pe = parse(&patched(2, VIRTUAL_ADDRESS, 0x2100)).unwrap();
+        assert_eq!(
+            pe.memory_mapped_image(0x1000_0000),
+            [
+                (0, 0..0x400),
+                (0x1000, 0x400..0x600),
+                (0x2000, 0x800..0xA00)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_section_longer_than_its_slot_is_cut_at_the_next_one() {
+        let mut data = patched(0, SIZE_OF_RAW_DATA, 0x1200);
+        data.resize(data.len() + 0x2000, 0);
+        let pe = parse(&data).unwrap();
+        assert_eq!(
+            pe.memory_mapped_image(0x1000_0000)[1..3],
+            [(0x1000, 0x400..0x1400), (0x2000, 0x600..0x800)]
+        );
+    }
+
+    #[test]
+    fn skips_a_section_whose_raw_data_runs_past_the_file() {
+        let pe = parse(&patched(1, SIZE_OF_RAW_DATA, 0x10_0000)).unwrap();
+        let pieces = pe.memory_mapped_image(0x1000_0000);
+        assert!(pieces.iter().all(|(at, _)| *at != 0x2000));
+    }
+
+    #[test]
+    fn resource_strings_are_the_string_table_values() {
+        let pe = parse(include_bytes!("../../tests/fixtures/strings.dll")).unwrap();
+        assert_eq!(pe.resource_strings(), ["Hello", "caf\u{e9}"]);
+    }
+
+    #[test]
+    fn a_file_without_string_tables_has_no_resource_strings() {
+        assert!(parse(DLL).unwrap().resource_strings().is_empty());
+    }
+}
