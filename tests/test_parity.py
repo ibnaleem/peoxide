@@ -16,6 +16,9 @@ SYSTEM = [
     WINDIR / "System32" / "notepad.exe",
     WINDIR / "System32" / "drivers" / "ntfs.sys",
     WINDIR / "SysWOW64" / "kernel32.dll",
+    # The ones above have no TLS directory.
+    WINDIR / "System32" / "msvcrt.dll",
+    WINDIR / "SysWOW64" / "msvcrt.dll",
 ]
 SYSTEM = [p for p in SYSTEM if p.exists()]
 CORPUS = SYSTEM + sorted(p for p in (Path(__file__).parent / "fixtures").iterdir() if p.is_file())
@@ -438,6 +441,38 @@ def test_relocations(pair):
 
 def test_corpus_has_relocations():
     assert any(peoxide.PE(str(p)).DIRECTORY_ENTRY_BASERELOC for p in CORPUS)
+
+
+TLS_FIELDS = [
+    "StartAddressOfRawData",
+    "EndAddressOfRawData",
+    "AddressOfIndex",
+    "AddressOfCallBacks",
+    "SizeOfZeroFill",
+    "Characteristics",
+]
+
+
+def tls(pe):
+    entry = getattr(pe, "DIRECTORY_ENTRY_TLS", None)
+    return entry and [getattr(entry.struct, f) for f in TLS_FIELDS]
+
+
+def test_tls(pair):
+    ours, theirs = pair
+    assert tls(ours) == tls(theirs)
+
+
+def test_corpus_has_tls():
+    system = [peoxide.PE(str(p)) for p in SYSTEM]
+    assert {pe.OPTIONAL_HEADER.Magic for pe in system if tls(pe)} == {0x10B, 0x20B}
+
+
+@pytest.mark.parametrize("name", ["tls_size_zero.dll", "tls_outside_sections.dll"])
+def test_crafted_tls_matches_pefile(name):
+    path = str(Path(__file__).parent / "fixtures" / "crafted" / name)
+    assert tls(peoxide.PE(path)) == tls(pefile.PE(path))
+    assert tls(peoxide.PE(path))
 
 
 RESOURCE_DIR_FIELDS = ["Characteristics", "TimeDateStamp", "MajorVersion", "MinorVersion", "NumberOfNamedEntries", "NumberOfIdEntries"]

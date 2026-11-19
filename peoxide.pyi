@@ -260,6 +260,19 @@ class _RichHeader:
     clear_data: bytes
 
 @final
+class _TlsDirectory:
+    StartAddressOfRawData: int
+    EndAddressOfRawData: int
+    AddressOfIndex: int
+    AddressOfCallBacks: int
+    SizeOfZeroFill: int
+    Characteristics: int
+
+@final
+class _TlsData:
+    struct: _TlsDirectory
+
+@final
 class _BaseRelocation:
     VirtualAddress: int
     SizeOfBlock: int
@@ -386,6 +399,7 @@ class PE:
     sections: list[_Section]
     DIRECTORY_ENTRY_DEBUG: list[_DebugData]
     RICH_HEADER: _RichHeader | None
+    DIRECTORY_ENTRY_TLS: _TlsData | None
     def __new__(
         cls,
         name: str | os.PathLike[str] | None = None,
