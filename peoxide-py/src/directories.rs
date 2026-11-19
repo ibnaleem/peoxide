@@ -158,6 +158,19 @@ py_class!(RichHeader from peoxide_core::RichHeader as (py, c) {
     clear_data: Py<PyBytes> = bytes(py, &c.clear_data),
 });
 
+py_class!(TlsDirectory from peoxide_core::TlsDirectory as (py, c) {
+    StartAddressOfRawData: u64 = c.start_address_of_raw_data,
+    EndAddressOfRawData: u64 = c.end_address_of_raw_data,
+    AddressOfIndex: u64 = c.address_of_index,
+    AddressOfCallBacks: u64 = c.address_of_callbacks,
+    SizeOfZeroFill: u32 = c.size_of_zero_fill,
+    Characteristics: u32 = c.characteristics,
+});
+
+py_class!(TlsData from peoxide_core::TlsDirectory as (py, c) {
+    r#struct: Py<TlsDirectory> = Py::new(py, TlsDirectory::new(py, c)?)?,
+});
+
 py_class!(BaseRelocation from peoxide_core::RelocationBlock as (py, c) {
     VirtualAddress: u32 = c.virtual_address,
     SizeOfBlock: u32 = c.size_of_block,

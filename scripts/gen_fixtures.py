@@ -17,12 +17,15 @@ HEADERS_SIZE = 0x400
 E_LFANEW = 0x40
 TEXT_RVA = SECTION_ALIGN
 
-DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_RELOC, DIR_DEBUG, DIR_BOUND, DIR_DELAY = 0, 1, 2, 5, 6, 11, 13
+DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_RELOC, DIR_DEBUG, DIR_TLS, DIR_BOUND, DIR_DELAY = (
+    0, 1, 2, 5, 6, 9, 11, 13,
+)
 # Linkers put bound imports in the headers, after the section table.
 BOUND_OFFSET = 0x300
 CODE = 0x60000020
 DATA = 0x40000040
 AMD64, I386 = 0x8664, 0x14C
+IMAGE_BASE_64, IMAGE_BASE_32 = 0x180000000, 0x400000
 NATIVE, GUI, CUI = 1, 2, 3
 RT_VERSION = 16
 CODEVIEW = 2
@@ -149,6 +152,15 @@ VALID_BOUND = [
     (0x5F000001, b"KERNEL32.dll", [(0x5F000002, b"NTDLL.DLL"), (0x5F000003, b"KERNELBASE.dll")]),
     (0x5F000004, b"USER32.dll", []),
 ]
+def tls(section, wide, image_base):
+    """A TLS directory with a 16-byte template and a one-callback list. Its addresses are VAs."""
+    pointer = "Q" if wide else "I"
+    template = section.put(bytes(range(0x10)))
+    index = section.put(bytes(4))
+    callbacks = section.put(struct.pack(f"<2{pointer}", image_base + TEXT_RVA, 0), 8)
+    addresses = [template, template + 0x10, index, callbacks]
+    directory = struct.pack(f"<4{pointer}2I", *(image_base + a for a in addresses), 0x20, 0x00300000)
+    return section.put(directory, 8), len(directory)
 def shared_debug(section, count, record_size):
     """`count` CodeView entries that all point at one RSDS record of `record_size` bytes."""
     record = b"RSDS" + bytes(20) + b"p" * (record_size - 24)
@@ -199,7 +211,7 @@ def build(machine, wide, characteristics, subsystem, layout, image_base=None, bo
     """`bound` is a bound-import blob for the headers, or (blob, address) to point the
     directory somewhere else."""
     if image_base is None:
-        image_base = 0x180000000 if wide else 0x400000
+        image_base = IMAGE_BASE_64 if wide else IMAGE_BASE_32
     sections, directories = [], {}
     if isinstance(bound, bytes):
         bound = (bound, BOUND_OFFSET)
@@ -263,13 +275,21 @@ def fixtures():
                     [(b"Alpha", 0), (b"Gamma", 2)],
                 ),
                 DIR_DEBUG: debug(s, b"sample64.pdb"),
+                DIR_TLS: tls(s, True, IMAGE_BASE_64),
             },
         ),
         (b".rsrc", DATA, lambda s: {DIR_RESOURCE: resources(s)}),
     ]
     exe = [
         (b".text", CODE, code),
-        (b".rdata", DATA, lambda s: {DIR_IMPORT: imports(s, False, [(b"KERNEL32.dll", [b"ExitProcess"])])}),
+        (
+            b".rdata",
+            DATA,
+            lambda s: {
+                DIR_IMPORT: imports(s, False, [(b"KERNEL32.dll", [b"ExitProcess"])]),
+                DIR_TLS: tls(s, False, IMAGE_BASE_32),
+            },
+        ),
     ]
     driver = [
         (b".text", CODE, code),
@@ -367,6 +387,15 @@ def crafted():
         section.put(bytes(0x1000 - section.raw))
         blob = bound_imports(VALID_BOUND)
         return {DIR_BOUND: (section.offset(section.put(blob)), len(blob))}
+    tls_size_zero = [
+        (b".text", CODE, code),
+        (b".rdata", DATA, lambda s: {DIR_TLS: (tls(s, True, IMAGE_BASE_64)[0], 0)}),
+    ]
+    # The directory RVA is the struct's file offset, which falls before the first section.
+    tls_outside_sections = [
+        (b".text", CODE, code),
+        (b".rdata", DATA, lambda s: {DIR_TLS: (s.offset(tls(s, True, IMAGE_BASE_64)[0]), 40)}),
+    ]
 
     bound_in_section = [(b".text", CODE, code), (b".data", DATA, bound_at_text_rva)]
     shared_name = bound_imports([(i + 1, b"a" * 252 + b".dll", []) for i in range(8000)])
@@ -423,6 +452,10 @@ def crafted():
         "signed_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0x7FFFFFFFFFFFF000),
         # The base-relocation directory claims 256 MiB in a 2 KiB file.
         "long_relocations.dll": build(AMD64, True, 0x2022, GUI, long_relocations),
+        # pefile reads the TLS directory whatever its size, even zero.
+        "tls_size_zero.dll": build(AMD64, True, 0x2022, GUI, tls_size_zero),
+        # pefile reads an RVA outside every section as a file offset.
+        "tls_outside_sections.dll": build(AMD64, True, 0x2022, GUI, tls_outside_sections),
         # 64 languages share one RT_VERSION leaf whose FileInfo walk finds a block every 4 bytes,
         # each key running on through 4 KiB of 0x0001 units: about 64 MiB of keys if all kept.
         "overlapping_version.dll": build(

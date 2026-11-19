@@ -26,9 +26,11 @@ DIRECTORIES = [
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BASERELOC"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_TLS"],
 ]
 DEBUG_FIELDS = ["Characteristics", "TimeDateStamp", "Type", "SizeOfData", "PointerToRawData"]
 CODEVIEW_FIELDS = ["Signature_String", "Age", "PdbFileName", "CvHeaderSignature", "Signature"]
+TLS_FIELDS = [entry.split(",")[1] for entry in pefile.PE.__IMAGE_TLS_DIRECTORY_format__[1]]
 
 
 def summarize(pe, export_limit=None):
@@ -126,9 +128,15 @@ def details(pe, rvas, offsets):
             for d in getattr(pe, "DIRECTORY_ENTRY_BOUND_IMPORT", [])
         ],
         "rich header": rich_header(pe),
+        "tls": tls(pe),
         "resources": resource_tree(getattr(pe, "DIRECTORY_ENTRY_RESOURCE", None)),
         "version info": version_info(pe),
     }
+
+
+def tls(pe):
+    entry = getattr(pe, "DIRECTORY_ENTRY_TLS", None)
+    return entry and [getattr(entry.struct, f) for f in TLS_FIELDS]
 
 
 def resource_tree(directory):
