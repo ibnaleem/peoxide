@@ -8,10 +8,14 @@ pub use debug::{DebugDirectory, DebugEntry};
 mod headers;
 mod imphash;
 mod imports;
+mod load_config;
+pub use load_config::{
+    BddRelocation, DynamicRelocation, DynamicRelocationKind, FunctionOverride, LoadConfig,
+};
 mod ordinals;
 mod reloc;
 mod resource;
-pub use reloc::{Relocation, RelocationBlock};
+pub use reloc::{Relocation, RelocationBlock, RelocationFormat};
 pub use resource::{ResourceChild, ResourceData, ResourceDirectory, ResourceEntry};
 mod rich;
 mod tls;
@@ -434,7 +438,11 @@ mod tests {
 
     #[test]
     fn crafted_fixtures_parse_without_panicking() {
-        let crafted: [&[u8]; 16] = [
+        let crafted: [&[u8]; 20] = [
+            include_bytes!("../../tests/fixtures/crafted/load_config_short_size.dll"),
+            include_bytes!("../../tests/fixtures/crafted/load_config_odd_size.dll"),
+            include_bytes!("../../tests/fixtures/crafted/load_config_long_table.dll"),
+            include_bytes!("../../tests/fixtures/crafted/load_config_overlap.dll"),
             include_bytes!("../../tests/fixtures/crafted/shared_thunks.dll"),
             include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll"),
             include_bytes!("../../tests/fixtures/crafted/huge_count.dll"),
@@ -456,6 +464,7 @@ mod tests {
         for data in crafted {
             if let Ok(pe) = parse(data) {
                 let _ = pe.parse_relocations(data);
+                let _ = pe.parse_load_config(data);
                 let _ = pe.parse_bound_imports(data);
             }
         }

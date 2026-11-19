@@ -17,6 +17,7 @@ HEADERS_SIZE = 0x400
 E_LFANEW = 0x40
 TEXT_RVA = SECTION_ALIGN
 
+DIR_LOAD_CONFIG = 10
 DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_RELOC, DIR_DEBUG, DIR_TLS, DIR_BOUND, DIR_DELAY = (
     0, 1, 2, 5, 6, 9, 11, 13,
 )
@@ -124,6 +125,78 @@ def debug(section, pdb):
     return section.put(entry), len(entry)
 
 
+# Byte offsets in IMAGE_LOAD_CONFIG_DIRECTORY (PE32, PE32+): DynamicValueRelocTableOffset,
+# then the full structure's size.
+LOAD_CONFIG_LAYOUT = {False: (136, 192), True: (224, 320)}
+
+
+def load_config(section, wide, table, table_section, size=None):
+    """A load config structure whose fields hold distinct bytes, pointing at `table` (a
+    dynamic relocation table) in the section numbered `table_section`. `size` overrides the
+    structure's Size field."""
+    # Offset 0 would mean no table.
+    section.put(bytes(16))
+    table_rva = section.put(table)
+    dynamic_offset, full = LOAD_CONFIG_LAYOUT[wide]
+    config = bytearray((i * 7 + 1) & 0xFF for i in range(full))
+    struct.pack_into("<I", config, 0, full if size is None else size)
+    struct.pack_into("<IH", config, dynamic_offset, table_rva - section.rva, table_section)
+    return section.put(bytes(config)), full
+
+
+def dynamic_relocations(wide, entries, size=None):
+    """A version-1 IMAGE_DYNAMIC_RELOCATION_TABLE. Each entry is (symbol, payload) or
+    (symbol, payload, declared BaseRelocSize)."""
+    header = "<QI" if wide else "<2I"
+    body = b""
+    for symbol, payload, *declared in entries:
+        body += struct.pack(header, symbol, declared[0] if declared else len(payload)) + payload
+    return struct.pack("<2I", 1, len(body) if size is None else size) + body
+
+
+def relocation_block(rva, words, word="H"):
+    data = b"".join(struct.pack("<" + word, w) for w in words)
+    return struct.pack("<2I", rva, 8 + len(data)) + data
+
+
+def function_override(functions, bdd_entries):
+    """Symbol 7's payload: (original RVA, override RVAs, relocation block) functions, then
+    (Left, Right, Value) BDD entries."""
+    body = b""
+    for original, overrides, block in functions:
+        rvas = b"".join(struct.pack("<I", rva) for rva in overrides)
+        body += struct.pack("<4I", original, 0x10, len(rvas), len(block)) + rvas + block
+    bdd = b"".join(struct.pack("<2HI", *entry) for entry in bdd_entries)
+    return struct.pack("<I", len(body)) + body + struct.pack("<2I", 1, len(bdd)) + bdd
+
+
+def every_dynamic_relocation(wide):
+    """Each kind pefile parses, plus a skipped symbol 1. Symbol 5's third entry repeats the
+    first's page offset, which is where pefile stops reading that block."""
+    entries = [
+        (1, relocation_block(TEXT_RVA, [0xA010])),
+        (3, relocation_block(TEXT_RVA, [0x10 | 1 << 12 | 5 << 13, 0x20 | 7 << 13], "I")),
+        (4, relocation_block(TEXT_RVA, [0x30 | 1 << 12 | 1 << 14, 0x40 | 1 << 13 | 1 << 15])),
+        (5, relocation_block(TEXT_RVA, [0x50 | 3 << 12, 0x60, 0x50 | 9 << 12])),
+        (6, relocation_block(TEXT_RVA, [0xA010, 0xA018])),
+        (
+            7,
+            function_override(
+                [(TEXT_RVA, [TEXT_RVA + 4, TEXT_RVA + 8], relocation_block(TEXT_RVA, [0xA020]))],
+                [(1, 2, 3), (4, 5, 6)],
+            ),
+        ),
+    ]
+    big_symbol = 0xFFFFF78000000000 if wide else 0x80000000
+    return dynamic_relocations(wide, entries + [(big_symbol, relocation_block(TEXT_RVA, [0xA028]))])
+
+
+def overlapping_function_overrides(count, rva_size):
+    """`count` symbol-7 entries 32 bytes apart. Each one's override RVA list runs `rva_size`
+    bytes on through the entries after it, so reading them all costs count * rva_size / 4."""
+    payload = struct.pack("<5I", 16, TEXT_RVA, 0, rva_size, 0)
+    table = dynamic_relocations(True, [(7, payload)] * count)
+    return table + bytes(rva_size + 16)
 def bound_imports(descriptors):
     """IMAGE_BOUND_IMPORT_DESCRIPTORs, each followed by its IMAGE_BOUND_FORWARDER_REFs, then a
     zero terminator and the module names. A descriptor is (stamp, name, refs), or
@@ -313,6 +386,8 @@ def fixtures():
         "high_ordinal_base.dll": build(AMD64, True, 0x2022, GUI, high_ordinal_base),
         "sample32.exe": build(I386, False, 0x0102, CUI, exe),
         "driver.sys": build(AMD64, True, 0x0022, NATIVE, driver),
+        "load_config64.dll": build(AMD64, True, 0x2022, GUI, load_config_layout(True, every_dynamic_relocation(True))),
+        "load_config32.dll": build(I386, False, 0x2102, GUI, load_config_layout(False, every_dynamic_relocation(False))),
         "bound_imports.dll": build(
             AMD64, True, 0x2022, GUI, bound_layout(True), bound=bound_imports(VALID_BOUND)
         ),
@@ -321,6 +396,14 @@ def fixtures():
         ),
         **{f"crafted/{name}": data for name, data in crafted().items()},
     }
+
+
+def load_config_layout(wide, table, table_section=2, size=None):
+    """A load config in .rdata, the second section, whose dynamic relocation table is `table`."""
+    return [
+        (b".text", CODE, code),
+        (b".rdata", DATA, lambda s: {DIR_LOAD_CONFIG: load_config(s, wide, table, table_section, size)}),
+    ]
 
 
 def crafted():
@@ -374,6 +457,10 @@ def crafted():
             },
         ),
     ]
+    block = relocation_block(TEXT_RVA, [0x10, 0x20])
+    long_table = dynamic_relocations(
+        True, [(4, block), (0, b""), (0, b""), (6, block, 0x7FFFFFF0)], size=0xFFFFFFF0
+    )
     text_only = [(b".text", CODE, code)]
     huge_refs = [(0, b"KERNEL32.dll", [(1, b"NTDLL.DLL"), (2, b"KERNELBASE.dll")], 0xFFFF)]
     bad_names = [
@@ -417,6 +504,21 @@ def crafted():
         tree += struct.pack("<4I", section.rva + leaf + 16, len(blob), 0, 0)
         return {DIR_RESOURCE: (section.put(tree + blob), len(tree) + len(blob))}
     return {
+        # Size 72 ends the load config after 13 of its 52 fields, before GuardFlags.
+        "load_config_short_size.dll": build(
+            AMD64, True, 0x2022, GUI, load_config_layout(True, every_dynamic_relocation(True), size=72)
+        ),
+        # Size 77 falls inside ProcessHeapFlags, so pefile reads all 320 bytes. The dynamic
+        # relocation table's section number, 9, is past the two sections the file has.
+        "load_config_odd_size.dll": build(
+            AMD64, True, 0x2022, GUI, load_config_layout(True, every_dynamic_relocation(True), 9, 77)
+        ),
+        # The dynamic relocation table claims 4 GiB, and its last entry 2 GiB.
+        "load_config_long_table.dll": build(AMD64, True, 0x2022, GUI, load_config_layout(True, long_table)),
+        # 1,024 function overrides whose 32 KiB override lists overlap: 8 million RVAs in all.
+        "load_config_overlap.dll": build(
+            AMD64, True, 0x2022, GUI, load_config_layout(True, overlapping_function_overrides(1024, 0x8000))
+        ),
         # NumberOfModuleForwarderRefs is 0xFFFF; the headers have room for 31 refs.
         "bound_huge_count.dll": build(AMD64, True, 0x2022, GUI, text_only, bound=bound_imports(huge_refs)),
         # A forwarder name and a module name hold bytes outside string.printable.

@@ -25,6 +25,7 @@ DIRECTORIES = [
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DEBUG"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BASERELOC"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_TLS"],
 ]
@@ -114,10 +115,8 @@ def details(pe, rvas, offsets):
             for d in getattr(pe, "DIRECTORY_ENTRY_DEBUG", [])
             if d.struct.Type != 4
         ],
-        "relocations": [
-            (b.struct.VirtualAddress, b.struct.SizeOfBlock, [(e.type, e.rva) for e in b.entries])
-            for b in getattr(pe, "DIRECTORY_ENTRY_BASERELOC", [])
-        ],
+        "relocations": relocation_blocks(getattr(pe, "DIRECTORY_ENTRY_BASERELOC", [])),
+        "load config": load_config(pe),
         "bound imports": [
             (
                 d.struct.TimeDateStamp,
@@ -134,6 +133,61 @@ def details(pe, rvas, offsets):
     }
 
 
+MISSING = "missing"
+RELOCATION_ENTRY_FIELDS = [
+    "Data",
+    "PageRelativeOffset",
+    "IndirectCall",
+    "IATIndex",
+    "RexWPrefix",
+    "CfgCheck",
+    "Reserved",
+    "RegisterNumber",
+]
+FUNCTION_OVERRIDE_FIELDS = ["OriginalRva", "BDDOffset", "RvaSize", "BaseRelocSize"]
+LOAD_CONFIG_FIELDS = [
+    entry.split(",")[1] for entry in pefile.PE.__IMAGE_LOAD_CONFIG_DIRECTORY64_format__[1]
+]
+
+
+def fields(struct, names):
+    return [getattr(struct, name, MISSING) for name in names]
+
+
+def relocation_blocks(blocks):
+    return [
+        (
+            b.struct.VirtualAddress,
+            b.struct.SizeOfBlock,
+            [(getattr(e, "type", MISSING), e.rva, fields(e.struct, RELOCATION_ENTRY_FIELDS)) for e in b.entries],
+        )
+        for b in blocks
+    ]
+
+
+def load_config(pe):
+    """The structure's fields, `MISSING` where it stops short, and its dynamic relocations."""
+    config = getattr(pe, "DIRECTORY_ENTRY_LOAD_CONFIG", None)
+    if config is None:
+        return None
+    dynamic = config.dynamic_relocations
+
+    def relocation(d):
+        header = (d.struct.Symbol, d.struct.BaseRelocSize, d.symbol)
+        if not hasattr(d, "func_relocs"):
+            return header, relocation_blocks(d.relocations)
+        functions = [
+            (
+                fields(f.struct, FUNCTION_OVERRIDE_FIELDS),
+                f.func_rva,
+                f.override_rvas,
+                relocation_blocks(f.relocations),
+            )
+            for f in d.func_relocs
+        ]
+        return header, functions, [fields(b.struct, ["Left", "Right", "Value"]) for b in d.bdd_relocs]
+
+    return fields(config.struct, LOAD_CONFIG_FIELDS), dynamic and [relocation(d) for d in dynamic]
 def tls(pe):
     entry = getattr(pe, "DIRECTORY_ENTRY_TLS", None)
     return entry and [getattr(entry.struct, f) for f in TLS_FIELDS]

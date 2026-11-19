@@ -100,3 +100,17 @@ def test_random_corruption_never_crashes():
             continue
         # Built on first access, so PE() alone never parses them.
         pe.DIRECTORY_ENTRY_BOUND_IMPORT
+        read_lazy_directories(pe)
+
+
+def read_lazy_directories(pe):
+    """Builds the directories `PE()` leaves for first access, down to each relocation entry."""
+    blocks = list(pe.DIRECTORY_ENTRY_BASERELOC)
+    config = pe.DIRECTORY_ENTRY_LOAD_CONFIG
+    for dynamic in (config and config.dynamic_relocations) or []:
+        blocks += getattr(dynamic, "relocations", [])
+        for function in getattr(dynamic, "func_relocs", []):
+            blocks += function.relocations
+    for block in blocks:
+        for entry in block.entries:
+            entry.struct
