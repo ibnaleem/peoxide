@@ -38,6 +38,7 @@ macro_rules! py_class {
     };
 }
 
+mod data;
 mod directories;
 mod exception;
 mod flags;

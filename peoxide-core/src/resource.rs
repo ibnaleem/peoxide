@@ -252,7 +252,13 @@ impl Walk<'_> {
 impl Pe {
     /// pefile's `get_string_u_at_rva`: up to `max_units` UTF-16 units, stopping at a NUL unit.
     /// `None` where pefile raises, and for a negative `max_units`, on which pefile never returns.
-    pub(crate) fn utf16_string_at(&self, data: &[u8], rva: i64, max_units: i64) -> Option<Vec<u8>> {
+    pub fn utf16_string_at(&self, data: &[u8], rva: i64, max_units: i64) -> Option<Vec<u8>> {
+        self.utf16_units_at(data, rva, max_units)
+            .map(|units| encode_units(units.into_iter()))
+    }
+
+    /// The UTF-16 units `utf16_string_at` encodes, for callers that pick their own encoding.
+    pub fn utf16_units_at(&self, data: &[u8], rva: i64, max_units: i64) -> Option<Vec<u16>> {
         let read = |rva: i64, length: i64| data.get(self.data_range(rva, Some(length))?);
         if max_units == 0 {
             return Some(Vec::new());
@@ -273,7 +279,28 @@ impl Pe {
             .iter()
             .map(|&u| u16::from_le_bytes(u))
             .take_while(|&u| u != 0);
-        Some(encode_units(units))
+        Some(units.collect())
+    }
+
+    /// pefile's `get_resources_strings`: every RT_STRING table's values, in tree order.
+    pub fn resource_strings(&self) -> Vec<&str> {
+        fn directories(child: &ResourceChild) -> Option<&ResourceDirectory> {
+            match child {
+                ResourceChild::Directory(directory) => Some(directory),
+                ResourceChild::Data(_) => None,
+            }
+        }
+        let Some(root) = &self.resources else {
+            return Vec::new();
+        };
+        root.entries
+            .iter()
+            .filter_map(|kind| directories(&kind.child))
+            .flat_map(|kind| &kind.entries)
+            .filter_map(|id| directories(&id.child))
+            .flat_map(|id| id.strings.iter().flatten())
+            .map(|(_, value)| value.as_str())
+            .collect()
     }
 
     pub(crate) fn parse_resources(&self, data: &[u8]) -> Option<ResourceDirectory> {

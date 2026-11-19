@@ -28,7 +28,7 @@ DATA = 0x40000040
 AMD64, I386 = 0x8664, 0x14C
 IMAGE_BASE_64, IMAGE_BASE_32 = 0x180000000, 0x400000
 NATIVE, GUI, CUI = 1, 2, 3
-RT_VERSION = 16
+RT_STRING, RT_VERSION = 6, 16
 CODEVIEW = 2
 
 
@@ -265,17 +265,26 @@ def version_info():
     return version_block("VS_VERSION_INFO", fixed, [strings, variables])
 
 
-def resources(section):
-    """One RT_VERSION resource: type, name and language levels, then the data entry."""
+def string_table(strings):
+    """An RT_STRING block: 16 length-prefixed UTF-16 strings, empty past the given ones."""
+    out = b""
+    for string in (strings + [""] * 16)[:16]:
+        out += struct.pack("<H", len(string)) + string.encode("utf-16-le")
+    return out
+
+
+def resources(section, kind=RT_VERSION, data=None):
+    """One resource of type `kind` (RT_VERSION by default): type, name and language levels,
+    then the data entry."""
 
     def directory(entry_id, target):
         return struct.pack("<2I4H2I", 0, 0, 0, 0, 0, 1, entry_id, target)
 
     subdirectory = 0x80000000
-    tree = directory(RT_VERSION, subdirectory | 24)
+    tree = directory(kind, subdirectory | 24)
     tree += directory(1, subdirectory | 48)
     tree += directory(0x409, 72)
-    data = version_info()
+    data = version_info() if data is None else data
     tree += struct.pack("<4I", section.rva + len(tree) + 16, len(data), 0, 0)
     return section.put(tree + data), len(tree) + len(data)
 
@@ -495,9 +504,20 @@ def fixtures():
             },
         ),
     ]
+    # A string table and one DIR64 relocation block.
+    strings = [
+        (b".text", CODE, code),
+        (
+            b".rsrc",
+            DATA,
+            lambda s: {DIR_RESOURCE: resources(s, RT_STRING, string_table(["Hello", "", "caf\xe9"]))},
+        ),
+        (b".reloc", DATA, lambda s: {DIR_RELOC: (s.put(struct.pack("<2I2H", TEXT_RVA, 12, 0xA000, 0)), 12)}),
+    ]
     unwind = [(b".text", CODE, code), (b".pdata", DATA, exceptions)]
     return {
         "sample64.dll": build(AMD64, True, 0x2022, GUI, dll),
+        "strings.dll": build(AMD64, True, 0x2022, GUI, strings),
         "exceptions64.dll": build(AMD64, True, 0x2022, GUI, unwind),
         "high_ordinal_base.dll": build(AMD64, True, 0x2022, GUI, high_ordinal_base),
         "sample32.exe": build(I386, False, 0x0102, CUI, exe),

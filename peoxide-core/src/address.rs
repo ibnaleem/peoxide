@@ -262,6 +262,40 @@ impl Pe {
         little_endian(data.get(self.data_range(rva, Some(size as i64))?)?, size)
     }
 
+    /// pefile's `get_memory_mapped_image` as `(image offset, file range)` pieces, in order and
+    /// without overlaps. Bytes no piece covers are zero, up to the end of the last piece.
+    /// The headers come first, then each section's data at its aligned address, which pads
+    /// with zeros or cuts off whatever is already past it. Sections at or above
+    /// `max_virtual_address`, empty ones, and ones whose raw data runs past the file are skipped.
+    pub fn memory_mapped_image(&self, max_virtual_address: i64) -> Vec<(usize, Range<usize>)> {
+        let file_size = self.file_size as i64;
+        let mut pieces = vec![(0, clamp((0, self.header_size), self.file_size))];
+        for (section, layout) in self.sections.iter().zip(&self.layouts) {
+            if section.virtual_size == 0 && section.size_of_raw_data == 0 {
+                continue;
+            }
+            let raw_size = section.size_of_raw_data as i64;
+            let raw_pointer = (section.pointer_to_raw_data & SECTOR_MASK) as i64;
+            if raw_size > file_size
+                || raw_pointer > file_size
+                || raw_size + raw_pointer > file_size
+                || layout.virtual_address >= max_virtual_address
+            {
+                continue;
+            }
+            let start = layout.virtual_address as usize;
+            while pieces.last().is_some_and(|(at, _)| *at >= start) {
+                pieces.pop();
+            }
+            if let Some((at, range)) = pieces.last_mut() {
+                range.end = range.end.min(range.start + (start - *at));
+            }
+            let range = layout.data_range(section, None, None, false);
+            pieces.push((start, clamp(range, self.file_size)));
+        }
+        pieces
+    }
+
     /// pefile's `get_string_at_rva`: the bytes at `rva` up to the first NUL, at most
     /// `max_length` of them. An RVA outside every section is read as a file offset.
     pub fn string_at_rva<'a>(&self, data: &'a [u8], rva: i64, max_length: i64) -> &'a [u8] {
@@ -291,4 +325,92 @@ fn little_endian(bytes: &[u8], size: usize) -> Option<u64> {
             .rev()
             .fold(0, |value, &byte| (value << 8) | u64::from(byte))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parse;
+    use crate::tests::DLL;
+
+    /// `DLL` with one field of section `index`'s table entry replaced.
+    fn patched(index: usize, field: usize, value: u32) -> Vec<u8> {
+        let pe = parse(DLL).unwrap();
+        let table = pe.headers.dos_header.e_lfanew as usize
+            + 24
+            + pe.headers.file_header.size_of_optional_header as usize;
+        let at = table + 40 * index + field;
+        let mut data = DLL.to_vec();
+        data[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        data
+    }
+
+    const VIRTUAL_ADDRESS: usize = 12;
+    const SIZE_OF_RAW_DATA: usize = 16;
+
+    #[test]
+    fn maps_the_headers_then_each_section_at_its_address() {
+        let pe = parse(DLL).unwrap();
+        assert_eq!(
+            pe.memory_mapped_image(0x1000_0000),
+            [
+                (0, 0..0x400),
+                (0x1000, 0x400..0x600),
+                (0x2000, 0x600..0x800),
+                (0x3000, 0x800..0xA00)
+            ]
+        );
+    }
+
+    #[test]
+    fn leaves_out_sections_at_or_above_the_limit() {
+        let pe = parse(DLL).unwrap();
+        assert_eq!(
+            pe.memory_mapped_image(0x2000),
+            [(0, 0..0x400), (0x1000, 0x400..0x600)]
+        );
+        assert_eq!(pe.memory_mapped_image(0), [(0, 0..0x400)]);
+        assert_eq!(pe.memory_mapped_image(i64::MIN), [(0, 0..0x400)]);
+    }
+
+    #[test]
+    fn a_section_at_the_same_aligned_address_replaces_the_previous_one() {
+        let pe = parse(&patched(2, VIRTUAL_ADDRESS, 0x2100)).unwrap();
+        assert_eq!(
+            pe.memory_mapped_image(0x1000_0000),
+            [
+                (0, 0..0x400),
+                (0x1000, 0x400..0x600),
+                (0x2000, 0x800..0xA00)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_section_longer_than_its_slot_is_cut_at_the_next_one() {
+        let mut data = patched(0, SIZE_OF_RAW_DATA, 0x1200);
+        data.resize(data.len() + 0x2000, 0);
+        let pe = parse(&data).unwrap();
+        assert_eq!(
+            pe.memory_mapped_image(0x1000_0000)[1..3],
+            [(0x1000, 0x400..0x1400), (0x2000, 0x600..0x800)]
+        );
+    }
+
+    #[test]
+    fn skips_a_section_whose_raw_data_runs_past_the_file() {
+        let pe = parse(&patched(1, SIZE_OF_RAW_DATA, 0x10_0000)).unwrap();
+        let pieces = pe.memory_mapped_image(0x1000_0000);
+        assert!(pieces.iter().all(|(at, _)| *at != 0x2000));
+    }
+
+    #[test]
+    fn resource_strings_are_the_string_table_values() {
+        let pe = parse(include_bytes!("../../tests/fixtures/strings.dll")).unwrap();
+        assert_eq!(pe.resource_strings(), ["Hello", "caf\u{e9}"]);
+    }
+
+    #[test]
+    fn a_file_without_string_tables_has_no_resource_strings() {
+        assert!(parse(DLL).unwrap().resource_strings().is_empty());
+    }
 }

@@ -1,10 +1,13 @@
 use pyo3::IntoPyObjectExt;
 use pyo3::buffer::PyBuffer;
-use pyo3::exceptions::{PyOSError, PyTypeError};
+use pyo3::exceptions::{
+    PyNotImplementedError, PyOSError, PyOverflowError, PyTypeError, PyValueError,
+};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyList, PyTuple};
 
+use crate::data::{bytes_from_data, extract_packable, saturating_i64, slice, uint_from_data};
 use crate::directories::{
     BaseRelocationData, BoundImportDescData, DebugData, ExportDirData, ImportDescData, RichHeader,
     TlsData,
@@ -484,6 +487,229 @@ impl PE {
         Ok(Some(PyBytes::new(py, string)))
     }
 
+    /// The UTF-16 string at an RVA, up to `max_length` units or a NUL unit, as `bytes` in
+    /// `encoding` (UTF-8 when it is omitted or empty), with unencodable characters escaped.
+    /// Raises `PEFormatError` for an RVA that can't be read, including a negative one, and
+    /// `ValueError` for a negative `max_length`, on which pefile never returns.
+    #[pyo3(
+        signature = (rva, max_length=None, encoding=None),
+        text_signature = "(self, rva, max_length=65536, encoding=None)"
+    )]
+    fn get_string_u_at_rva<'py>(
+        &self,
+        py: Python<'py>,
+        rva: &Bound<'py, PyAny>,
+        max_length: Option<&Bound<'py, PyAny>>,
+        encoding: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let max_length = max_length.map_or(Ok(MAX_UNICODE_STRING_LENGTH), saturating_i64)?;
+        if max_length == 0 {
+            return Ok(PyBytes::new(py, b"").into_any());
+        }
+        if max_length < 0 {
+            return Err(PyValueError::new_err("max_length must not be negative"));
+        }
+        let rva = saturating_i64(rva)?;
+        let unreadable = || PEFormatError::new_err("data at RVA can't be fetched. Corrupt header?");
+        if rva < 0 {
+            return Err(unreadable());
+        }
+        let file = self.data.as_bytes(py);
+        let encoding = match encoding {
+            Some(encoding) if encoding.is_truthy()? => encoding,
+            _ => {
+                let string = no_panic(|| self.pe.utf16_string_at(file, rva, max_length))?;
+                return Ok(PyBytes::new(py, &string.ok_or_else(unreadable)?).into_any());
+            }
+        };
+        let units =
+            no_panic(|| self.pe.utf16_units_at(file, rva, max_length))?.ok_or_else(unreadable)?;
+        // pefile turns each unit into its own character, so surrogate pairs stay apart.
+        // UTF-32 keeps them apart where UTF-16 decoding would join them.
+        let wide: Vec<u8> = units
+            .iter()
+            .flat_map(|&unit| u32::from(unit).to_le_bytes())
+            .collect();
+        PyBytes::new(py, &wide)
+            .call_method1("decode", ("utf-32-le", "surrogatepass"))?
+            .call_method1("encode", (encoding, "backslashreplace"))
+    }
+
+    /// The file offset of an RVA, or `None` where `get_offset_from_rva` would raise or the
+    /// RVA is not an integer.
+    fn get_physical_by_rva<'py>(
+        &self,
+        rva: &Bound<'py, PyAny>,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let py = rva.py();
+        let rva_value = match rva.extract::<i64>() {
+            Ok(value) => value,
+            // Below every section and the file size, so pefile hands it back unchanged.
+            Err(e) if e.is_instance_of::<PyOverflowError>(py) && rva.lt(0)? => {
+                return Ok(Some(rva.clone()));
+            }
+            Err(_) => return Ok(None),
+        };
+        let offset = no_panic(|| self.pe.offset_from_rva(rva_value))?;
+        Ok(offset.map(|o| {
+            let Ok(o) = o.into_pyobject(py);
+            o.into_any()
+        }))
+    }
+
+    /// The headers and the sections laid out at their RVAs, with zeros between them, as
+    /// pefile maps them. Sections at or above `max_virtual_address` are left out.
+    /// `ImageBase` other than `OPTIONAL_HEADER.ImageBase` raises `NotImplementedError`:
+    /// peoxide does not apply relocations.
+    #[pyo3(
+        signature = (max_virtual_address=None, ImageBase=None),
+        text_signature = "(self, max_virtual_address=0x10000000, ImageBase=None)"
+    )]
+    fn get_memory_mapped_image<'py>(
+        &self,
+        py: Python<'py>,
+        max_virtual_address: Option<&Bound<'py, PyAny>>,
+        ImageBase: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let max_virtual_address =
+            max_virtual_address.map_or(Ok(MAX_MAPPED_VIRTUAL_ADDRESS), saturating_i64)?;
+        if let Some(base) = ImageBase
+            && base.ne(self.pe.headers.optional_header.image_base)?
+        {
+            return Err(PyNotImplementedError::new_err(
+                "peoxide does not relocate images; ImageBase must be None or \
+                 OPTIONAL_HEADER.ImageBase",
+            ));
+        }
+        let file = self.data.as_bytes(py);
+        let pieces = no_panic(|| self.pe.memory_mapped_image(max_virtual_address))?;
+        let len = pieces.last().map_or(0, |(at, range)| at + range.len());
+        PyBytes::new_with(py, len, |image| {
+            for (at, range) in &pieces {
+                image[*at..*at + range.len()].copy_from_slice(&file[range.clone()]);
+            }
+            Ok(())
+        })
+    }
+
+    /// pefile's `PE_TYPE`: the OPTIONAL_HEADER magic, 0x10b for PE32 or 0x20b for PE32+.
+    #[getter]
+    fn PE_TYPE(&self) -> u16 {
+        self.pe.headers.optional_header.magic
+    }
+
+    /// True when the file has at least one readable base relocation block.
+    /// Reads the cached `DIRECTORY_ENTRY_BASERELOC`, so only the first call parses.
+    fn has_relocs(&self, py: Python<'_>) -> PyResult<bool> {
+        Ok(!self.DIRECTORY_ENTRY_BASERELOC(py)?.bind(py).is_empty())
+    }
+
+    /// Every string in the RT_STRING tables, in resource-tree order.
+    fn get_resources_strings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        PyList::new(py, no_panic(|| self.pe.resource_strings())?)
+    }
+
+    /// A VA inside the image as an RVA. Anything else, zero included, comes back unchanged.
+    fn normalize_import_va<'py>(&self, va: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let header = &self.pe.headers.optional_header;
+        let begin = header.image_base;
+        let end = u128::from(begin) + u128::from(header.size_of_image);
+        if va.ge(begin)? && va.lt(end)? {
+            va.sub(begin)
+        } else {
+            Ok(va.clone())
+        }
+    }
+
+    /// `offset` plus `base` rounded up to a DWORD boundary, less `base` rounded down to one.
+    fn dword_align<'py>(
+        &self,
+        offset: &Bound<'py, PyAny>,
+        base: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        offset
+            .add(base)?
+            .add(3)?
+            .bitand(DWORD_MASK)?
+            .sub(base.bitand(DWORD_MASK)?)
+    }
+
+    /// The little-endian 16-bit value at index `offset` of `data` read as a WORD array, or
+    /// `None` when `data` is too short.
+    fn get_word_from_data(
+        &self,
+        data: &Bound<'_, PyAny>,
+        offset: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<u64>> {
+        uint_from_data(data, offset, 2)
+    }
+
+    /// Like `get_word_from_data`, for a DWORD array.
+    fn get_dword_from_data(
+        &self,
+        data: &Bound<'_, PyAny>,
+        offset: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<u64>> {
+        uint_from_data(data, offset, 4)
+    }
+
+    /// Like `get_word_from_data`, for a QWORD array.
+    fn get_qword_from_data(
+        &self,
+        data: &Bound<'_, PyAny>,
+        offset: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<u64>> {
+        uint_from_data(data, offset, 8)
+    }
+
+    /// `data[offset:]`, as `bytes` when `data` is a `bytearray`, or `b""` past its end.
+    fn get_bytes_from_data<'py>(
+        &self,
+        offset: &Bound<'py, PyAny>,
+        data: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        bytes_from_data(offset, data)
+    }
+
+    /// `get_bytes_from_data`, cut at the first NUL.
+    fn get_string_from_data<'py>(
+        &self,
+        offset: &Bound<'py, PyAny>,
+        data: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let py = data.py();
+        let bytes = bytes_from_data(offset, data)?;
+        if let Ok(b) = bytes.cast::<PyBytes>() {
+            return Ok(match b.as_bytes().iter().position(|&c| c == 0) {
+                Some(end) => PyBytes::new(py, &b.as_bytes()[..end]).into_any(),
+                None => bytes,
+            });
+        }
+        let end = bytes.call_method1("find", (PyBytes::new(py, b"\0"),))?;
+        if end.ge(0)? {
+            return bytes.get_item(slice(py, py.None().bind(py), &end)?);
+        }
+        Ok(bytes)
+    }
+
+    /// `word` as two little-endian bytes. `struct.error` when it is not in 0..=0xFFFF.
+    fn get_data_from_word<'py>(&self, word: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyBytes>> {
+        let value: u16 = extract_packable(word)?;
+        Ok(PyBytes::new(word.py(), &value.to_le_bytes()))
+    }
+
+    /// The low 32 bits of `dword` as four little-endian bytes.
+    fn get_data_from_dword<'py>(&self, dword: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyBytes>> {
+        let value: u32 = dword.bitand(0xFFFF_FFFFu32)?.extract()?;
+        Ok(PyBytes::new(dword.py(), &value.to_le_bytes()))
+    }
+
+    /// `word` as eight little-endian bytes. `struct.error` when it is not in 0..2**64.
+    fn get_data_from_qword<'py>(&self, word: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyBytes>> {
+        let value: u64 = extract_packable(word)?;
+        Ok(PyBytes::new(word.py(), &value.to_le_bytes()))
+    }
+
     /// The checksum Windows expects in `OPTIONAL_HEADER.CheckSum` for this file.
     fn generate_checksum(&self, py: Python<'_>) -> PyResult<u64> {
         let file = self.data.as_bytes(py);
@@ -514,6 +740,11 @@ impl PE {
 
 /// pefile's `MAX_STRING_LENGTH`.
 const MAX_STRING_LENGTH: i64 = 0x100000;
+/// pefile's default `max_length` for `get_string_u_at_rva`, in UTF-16 units.
+const MAX_UNICODE_STRING_LENGTH: i64 = 1 << 16;
+/// pefile's default `max_virtual_address` for `get_memory_mapped_image`.
+const MAX_MAPPED_VIRTUAL_ADDRESS: i64 = 0x1000_0000;
+const DWORD_MASK: u32 = 0xFFFF_FFFC;
 
 impl PE {
     /// `None` for a negative RVA. pefile would read from the end of the headers or the file.
