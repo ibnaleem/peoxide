@@ -9,6 +9,7 @@ use crate::directories::{
     BaseRelocationData, BoundImportDescData, DebugData, ExportDirData, ImportDescData, RichHeader,
     TlsData,
 };
+use crate::exception::exception_entries;
 use crate::flags::{DLL_CHARACTERISTICS_FLAGS, IMAGE_FILE_FLAGS, SECTION_FLAGS, with_flags};
 use crate::headers::{DosHeader, FileHeader, NtHeaders, OptionalHeader};
 use crate::load_config::LoadConfigData;
@@ -79,6 +80,7 @@ pub(crate) struct PE {
     #[pyo3(get)]
     DIRECTORY_ENTRY_TLS: Option<Py<TlsData>>,
     relocations: PyOnceLock<Py<PyList>>,
+    exceptions: PyOnceLock<Py<PyList>>,
     bound_imports: PyOnceLock<Py<PyList>>,
     resources: PyOnceLock<Option<Py<ResourceDirData>>>,
     load_config: PyOnceLock<Option<Py<LoadConfigData>>>,
@@ -167,6 +169,7 @@ impl PE {
                 .map(|t| Py::new(py, TlsData::new(py, t)?))
                 .transpose()?,
             relocations: PyOnceLock::new(),
+            exceptions: PyOnceLock::new(),
             bound_imports: PyOnceLock::new(),
             resources: PyOnceLock::new(),
             load_config: PyOnceLock::new(),
@@ -319,6 +322,18 @@ impl PE {
             .get_or_try_init(py, || {
                 let blocks = no_panic(|| self.pe.parse_relocations(self.data.as_bytes(py)))?;
                 list(py, &blocks, BaseRelocationData::new)
+            })
+            .map(|l| l.clone_ref(py))
+    }
+
+    /// RUNTIME_FUNCTION entries with their unwind information, empty when the file has none
+    /// or is not AMD64 or IA64. Built on first access.
+    #[getter]
+    fn DIRECTORY_ENTRY_EXCEPTION(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
+        self.exceptions
+            .get_or_try_init(py, || {
+                let exceptions = no_panic(|| self.pe.parse_exceptions(self.data.as_bytes(py)))?;
+                exception_entries(py, &exceptions)
             })
             .map(|l| l.clone_ref(py))
     }

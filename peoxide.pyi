@@ -324,6 +324,183 @@ class _BaseRelocationData:
     entries: list[_RelocationData]
 
 @final
+class _RuntimeFunction:
+    BeginAddress: int
+    EndAddress: int
+    UnwindData: int
+
+@final
+class _UnwindCodeStruct:
+    CodeOffset: int
+    UnwindOp: int
+    OpInfo: int
+
+@final
+class _UnwindCodeRegStruct:
+    CodeOffset: int
+    UnwindOp: int
+    Reg: int
+
+@final
+class _AllocLargeQwordsStruct:
+    CodeOffset: int
+    UnwindOp: int
+    OpInfo: int
+    AllocSizeInQwords: int
+
+@final
+class _AllocLargeStruct:
+    CodeOffset: int
+    UnwindOp: int
+    OpInfo: int
+    AllocSize: int
+
+@final
+class _AllocSmallStruct:
+    CodeOffset: int
+    UnwindOp: int
+    AllocSizeInQwordsMinus8: int
+
+@final
+class _SaveNonvolStruct:
+    CodeOffset: int
+    UnwindOp: int
+    Reg: int
+    OffsetInQwords: int
+
+@final
+class _SaveXmm128Struct:
+    CodeOffset: int
+    UnwindOp: int
+    Reg: int
+    OffsetIn2Qwords: int
+
+@final
+class _SaveFarStruct:
+    CodeOffset: int
+    UnwindOp: int
+    Reg: int
+    Offset: int
+
+@final
+class _EpilogFirstStruct:
+    OffsetLow: int
+    Size: int
+    UnwindOp: int
+    Flags: int
+
+@final
+class _EpilogFirstLongStruct:
+    Size: int
+    UnwindOp: int
+    Flags: int
+    OffsetLow: int
+    Unused: int
+    OffsetHigh: int
+
+@final
+class _EpilogStruct:
+    OffsetLow: int
+    UnwindOp: int
+    OffsetHigh: int
+
+@final
+class _PrologEpilogOpPushReg:
+    struct: _UnwindCodeRegStruct
+    def is_valid(self) -> bool: ...
+
+@final
+class _PrologEpilogOpAllocLarge:
+    struct: _AllocLargeQwordsStruct | _AllocLargeStruct
+    def is_valid(self) -> bool: ...
+    def get_alloc_size(self) -> int: ...
+
+@final
+class _PrologEpilogOpAllocSmall:
+    struct: _AllocSmallStruct
+    def is_valid(self) -> bool: ...
+    def get_alloc_size(self) -> int: ...
+
+@final
+class _PrologEpilogOpSetFP:
+    struct: _UnwindCodeStruct
+    def is_valid(self) -> bool: ...
+
+@final
+class _PrologEpilogOpSaveReg:
+    struct: _SaveNonvolStruct
+    def is_valid(self) -> bool: ...
+    def get_offset(self) -> int: ...
+
+@final
+class _PrologEpilogOpSaveRegFar:
+    struct: _SaveFarStruct
+    def is_valid(self) -> bool: ...
+    def get_offset(self) -> int: ...
+
+@final
+class _PrologEpilogOpSaveXMM:
+    struct: _SaveXmm128Struct
+    def is_valid(self) -> bool: ...
+    def get_offset(self) -> int: ...
+
+@final
+class _PrologEpilogOpSaveXMMFar:
+    struct: _SaveFarStruct
+    def is_valid(self) -> bool: ...
+    def get_offset(self) -> int: ...
+
+@final
+class _PrologEpilogOpPushFrame:
+    struct: _UnwindCodeStruct
+    def is_valid(self) -> bool: ...
+
+@final
+class _PrologEpilogOpEpilogMarker:
+    struct: _EpilogFirstStruct | _EpilogFirstLongStruct | _EpilogStruct
+    def is_valid(self) -> bool: ...
+    def get_offset(self) -> int: ...
+
+_UnwindCode = (
+    _PrologEpilogOpPushReg
+    | _PrologEpilogOpAllocLarge
+    | _PrologEpilogOpAllocSmall
+    | _PrologEpilogOpSetFP
+    | _PrologEpilogOpSaveReg
+    | _PrologEpilogOpSaveRegFar
+    | _PrologEpilogOpSaveXMM
+    | _PrologEpilogOpSaveXMMFar
+    | _PrologEpilogOpPushFrame
+    | _PrologEpilogOpEpilogMarker
+)
+
+@final
+class _UnwindInfo:
+    Version: int
+    Flags: int
+    SizeOfProlog: int
+    CountOfCodes: int
+    FrameRegister: int
+    FrameOffset: int
+    UNW_FLAG_EHANDLER: bool
+    UNW_FLAG_UHANDLER: bool
+    UNW_FLAG_CHAININFO: bool
+    # Set only on a record read in full; elsewhere these raise AttributeError.
+    UnwindCodes: list[_UnwindCode]
+    # Only with UNW_FLAG_EHANDLER or UNW_FLAG_UHANDLER, without UNW_FLAG_CHAININFO.
+    ExceptionHandler: int
+    # Only with UNW_FLAG_CHAININFO.
+    FunctionEntry: int
+    # Only when the record has an epilog code.
+    SizeOfEpilog: int
+    def get_chained_function_entry(self) -> _ExceptionsDirEntryData | None: ...
+
+@final
+class _ExceptionsDirEntryData:
+    struct: _RuntimeFunction
+    unwindinfo: _UnwindInfo | None
+
+@final
 class _LoadConfigDirectory:
     # A structure whose Size stops early lacks the later fields, which raise AttributeError.
     Size: int
@@ -576,6 +753,8 @@ class PE:
     def DIRECTORY_ENTRY_DELAY_IMPORT(self) -> list[_ImportDescData]: ...
     @property
     def DIRECTORY_ENTRY_BASERELOC(self) -> list[_BaseRelocationData]: ...
+    @property
+    def DIRECTORY_ENTRY_EXCEPTION(self) -> list[_ExceptionsDirEntryData]: ...
     @property
     def DIRECTORY_ENTRY_BOUND_IMPORT(self) -> list[_BoundImportDescData]: ...
     @property

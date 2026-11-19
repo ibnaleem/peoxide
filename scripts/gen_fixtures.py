@@ -18,8 +18,8 @@ E_LFANEW = 0x40
 TEXT_RVA = SECTION_ALIGN
 
 DIR_LOAD_CONFIG = 10
-DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_RELOC, DIR_DEBUG, DIR_TLS, DIR_BOUND, DIR_DELAY = (
-    0, 1, 2, 5, 6, 9, 11, 13,
+DIR_EXPORT, DIR_IMPORT, DIR_RESOURCE, DIR_EXCEPTION, DIR_RELOC, DIR_DEBUG, DIR_TLS, DIR_BOUND, DIR_DELAY = (
+    0, 1, 2, 3, 5, 6, 9, 11, 13,
 )
 # Linkers put bound imports in the headers, after the section table.
 BOUND_OFFSET = 0x300
@@ -280,6 +280,120 @@ def resources(section):
     return section.put(tree + data), len(tree) + len(data)
 
 
+UWOP_PUSH_NONVOL, UWOP_ALLOC_LARGE, UWOP_ALLOC_SMALL, UWOP_SET_FPREG = 0, 1, 2, 3
+UWOP_SAVE_NONVOL, UWOP_SAVE_NONVOL_FAR, UWOP_EPILOG = 4, 5, 6
+UWOP_SAVE_XMM128, UWOP_SAVE_XMM128_FAR, UWOP_PUSH_MACHFRAME = 8, 9, 10
+UNW_FLAG_EHANDLER, UNW_FLAG_UHANDLER, UNW_FLAG_CHAININFO = 1, 2, 4
+RBX, RBP, RSI, R12 = 3, 5, 6, 12
+
+
+def slot(first, op, info, operand=b""):
+    """One unwind code: the first byte, the op and info nibbles, then any extra slots."""
+    return bytes([first, op | info << 4]) + operand
+
+
+def unwind_info(version, flags, codes, frame=0, trailer=b""):
+    """An UNWIND_INFO record. `codes` is the slot bytes, padded here to an even count."""
+    header = bytes([version | flags << 3, 0x10, len(codes) // 2, frame])
+    return header + codes + bytes(len(codes) % 4) + trailer
+
+
+def runtime_functions(section, functions):
+    """The RUNTIME_FUNCTION table for `(begin, end, unwind_data)` triples."""
+    table = b"".join(struct.pack("<3I", *f) for f in functions)
+    return section.put(table), len(table)
+
+
+def exceptions(section):
+    """One record per unwind code layout pefile reads, plus shared, chained and bit-0 entries."""
+    t = TEXT_RVA
+    handler = struct.pack("<I", t + 0x3C)
+    put = lambda *args, **kwargs: section.put(unwind_info(*args, **kwargs))
+    shared = put(
+        1,
+        UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER,
+        slot(8, UWOP_ALLOC_LARGE, 0, struct.pack("<H", 0x1A))
+        + slot(4, UWOP_ALLOC_SMALL, 3)
+        + slot(1, UWOP_PUSH_NONVOL, RBP),
+        trailer=handler,
+    )
+    frame = put(
+        1,
+        0,
+        slot(9, UWOP_SET_FPREG, 0)
+        + slot(5, UWOP_ALLOC_LARGE, 1, struct.pack("<I", 0x12345))
+        + slot(0, UWOP_PUSH_MACHFRAME, 0),
+        frame=RBP | 3 << 4,
+    )
+    saves = put(
+        1,
+        0,
+        slot(12, UWOP_SAVE_NONVOL, RBX, struct.pack("<H", 0x30))
+        + slot(10, UWOP_SAVE_NONVOL_FAR, R12, struct.pack("<I", 0x10008))
+        + slot(6, UWOP_SAVE_XMM128, 6, struct.pack("<H", 2))
+        + slot(0, UWOP_PUSH_MACHFRAME, 1),
+    )
+    # Flag 0x08 is undefined: it reserves the trailing DWORD, but pefile names no field for it.
+    far_xmm = put(
+        1,
+        0x08,
+        slot(7, UWOP_SAVE_XMM128_FAR, 15, struct.pack("<I", 0x20010)) + slot(2, UWOP_ALLOC_SMALL, 0),
+        trailer=handler,
+    )
+    # The first epilog has an odd OpInfo, so its one slot holds the size and offset. The zero
+    # slot ends the epilog list, which pefile marks invalid.
+    short_epilogs = put(
+        2,
+        0,
+        slot(5, UWOP_EPILOG, 1)
+        + slot(0x20, UWOP_EPILOG, 3)
+        + slot(0, UWOP_EPILOG, 0)
+        + slot(1, UWOP_PUSH_NONVOL, RSI),
+    )
+    long_epilog = put(2, 0, slot(7, UWOP_EPILOG, 0) + bytes([0x34, 0x20]))
+    parent = put(1, 0, slot(1, UWOP_PUSH_NONVOL, RBX))
+    chained = put(1, UNW_FLAG_CHAININFO, b"", trailer=struct.pack("<3I", t + 0x20, t + 0x24, parent))
+    orphan = put(1, UNW_FLAG_CHAININFO, b"", trailer=struct.pack("<3I", t + 0x3F, t + 0x40, parent))
+    functions = [
+        (t, t + 4, shared),
+        (t + 4, t + 8, shared),
+        (t + 8, t + 0xC, frame),
+        (t + 0xC, t + 0x10, saves),
+        (t + 0x10, t + 0x14, far_xmm),
+        (t + 0x14, t + 0x18, short_epilogs),
+        (t + 0x18, t + 0x1C, long_epilog),
+        (t + 0x20, t + 0x24, parent),
+        (t + 0x24, t + 0x28, chained),
+        (t + 0x28, t + 0x2C, orphan),
+        # Bit 0 set: pefile reads no unwind information.
+        (t + 0x2C, t + 0x30, (t + 0x20) | 1),
+    ]
+    return {DIR_EXCEPTION: runtime_functions(section, functions)}
+
+
+def crafted_exceptions(section):
+    """A 255-code record, a self-chained entry, a two-entry chain cycle and a record cut off by
+    the end of the section, under a directory that claims 256 MiB."""
+    t = TEXT_RVA
+    put = lambda *args, **kwargs: section.put(unwind_info(*args, **kwargs))
+    chain = lambda begin: put(1, UNW_FLAG_CHAININFO, b"", trailer=struct.pack("<3I", begin, begin + 4, 0))
+    huge = put(1, 0, b"".join(slot(i, UWOP_ALLOC_SMALL, i % 16) for i in range(255)))
+    self_chain, cycle_a, cycle_b = chain(t + 4), chain(t + 0xC), chain(t + 8)
+    # The truncated record's header is the section's last 4 bytes; its codes would run past it.
+    truncated = section.rva + align(len(section.data) + 0x100, FILE_ALIGN) - 4
+    functions = [
+        (t, t + 4, huge),
+        (t + 4, t + 8, self_chain),
+        (t + 8, t + 0xC, cycle_a),
+        (t + 0xC, t + 0x10, cycle_b),
+        (t + 0x10, t + 0x14, truncated),
+    ]
+    table, _ = runtime_functions(section, functions)
+    section.data += bytes(truncated - section.rva - len(section.data))
+    section.put(bytes([1, 0x10, 4, 0]))
+    return {DIR_EXCEPTION: (table, 0x10000000)}
+
+
 def build(machine, wide, characteristics, subsystem, layout, image_base=None, bound=None):
     """`bound` is a bound-import blob for the headers, or (blob, address) to point the
     directory somewhere else."""
@@ -381,8 +495,10 @@ def fixtures():
             },
         ),
     ]
+    unwind = [(b".text", CODE, code), (b".pdata", DATA, exceptions)]
     return {
         "sample64.dll": build(AMD64, True, 0x2022, GUI, dll),
+        "exceptions64.dll": build(AMD64, True, 0x2022, GUI, unwind),
         "high_ordinal_base.dll": build(AMD64, True, 0x2022, GUI, high_ordinal_base),
         "sample32.exe": build(I386, False, 0x0102, CUI, exe),
         "driver.sys": build(AMD64, True, 0x0022, NATIVE, driver),
@@ -554,6 +670,9 @@ def crafted():
         "signed_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0x7FFFFFFFFFFFF000),
         # The base-relocation directory claims 256 MiB in a 2 KiB file.
         "long_relocations.dll": build(AMD64, True, 0x2022, GUI, long_relocations),
+        "exceptions.dll": build(
+            AMD64, True, 0x2022, GUI, [(b".text", CODE, code), (b".pdata", DATA, crafted_exceptions)]
+        ),
         # pefile reads the TLS directory whatever its size, even zero.
         "tls_size_zero.dll": build(AMD64, True, 0x2022, GUI, tls_size_zero),
         # pefile reads an RVA outside every section as a file offset.

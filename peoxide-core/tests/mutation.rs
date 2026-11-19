@@ -8,7 +8,7 @@ use peoxide_core::{Pe, clamp, entropy, parse};
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 
-const FIXTURES: [&[u8]; 7] = [
+const FIXTURES: [&[u8]; 9] = [
     // Load config with every kind of dynamic relocation, in PE32+ and PE32.
     include_bytes!("../../tests/fixtures/load_config64.dll"),
     include_bytes!("../../tests/fixtures/load_config32.dll"),
@@ -17,6 +17,9 @@ const FIXTURES: [&[u8]; 7] = [
     include_bytes!("../../tests/fixtures/driver.sys"),
     // The only seed with delay imports, and with import tables near pefile's symbol cap.
     include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll"),
+    // Every unwind code layout, then chain cycles, 255 codes and a truncated record.
+    include_bytes!("../../tests/fixtures/exceptions64.dll"),
+    include_bytes!("../../tests/fixtures/crafted/exceptions.dll"),
     // The only seed with bound imports.
     include_bytes!("../../tests/fixtures/bound_imports.dll"),
 ];
@@ -86,6 +89,17 @@ fn exercise(pe: &Pe, data: &[u8]) {
     let _ = (pe.is_dll(), pe.is_exe(), pe.is_driver());
     let _ = (pe.imphash_input(), pe.exphash_input());
     let _ = pe.parse_relocations(data);
+    let exceptions = pe.parse_exceptions(data);
+    for info in &exceptions.unwind_infos {
+        for code in info.body.iter().flat_map(|b| &b.codes) {
+            let _ = (
+                code.to_string(),
+                code.is_valid(),
+                code.offset(),
+                code.alloc_size(),
+            );
+        }
+    }
     let _ = pe.parse_load_config(data);
     let _ = pe.parse_bound_imports(data);
     let _ = pe.checksum(data);

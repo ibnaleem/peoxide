@@ -5,6 +5,11 @@ mod budget;
 mod checksum;
 mod debug;
 pub use debug::{DebugDirectory, DebugEntry};
+mod exception;
+pub use exception::{
+    AllocLarge, Epilog, Exceptions, RuntimeFunction, Trailer, UNW_FLAG_CHAININFO,
+    UNW_FLAG_EHANDLER, UNW_FLAG_UHANDLER, UnwindBody, UnwindCode, UnwindInfo, UnwindOp,
+};
 mod headers;
 mod imphash;
 mod imports;
@@ -438,7 +443,7 @@ mod tests {
 
     #[test]
     fn crafted_fixtures_parse_without_panicking() {
-        let crafted: [&[u8]; 20] = [
+        let crafted: [&[u8]; 21] = [
             include_bytes!("../../tests/fixtures/crafted/load_config_short_size.dll"),
             include_bytes!("../../tests/fixtures/crafted/load_config_odd_size.dll"),
             include_bytes!("../../tests/fixtures/crafted/load_config_long_table.dll"),
@@ -450,6 +455,7 @@ mod tests {
             include_bytes!("../../tests/fixtures/crafted/top_image_base.dll"),
             include_bytes!("../../tests/fixtures/crafted/signed_image_base.dll"),
             include_bytes!("../../tests/fixtures/crafted/long_relocations.dll"),
+            include_bytes!("../../tests/fixtures/crafted/exceptions.dll"),
             include_bytes!("../../tests/fixtures/crafted/bound_huge_count.dll"),
             include_bytes!("../../tests/fixtures/crafted/bound_bad_names.dll"),
             include_bytes!("../../tests/fixtures/crafted/bound_name_outside.dll"),
@@ -464,6 +470,7 @@ mod tests {
         for data in crafted {
             if let Ok(pe) = parse(data) {
                 let _ = pe.parse_relocations(data);
+                let _ = pe.parse_exceptions(data);
                 let _ = pe.parse_load_config(data);
                 let _ = pe.parse_bound_imports(data);
             }

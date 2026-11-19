@@ -101,6 +101,27 @@ def test_random_corruption_never_crashes():
         # Built on first access, so PE() alone never parses them.
         pe.DIRECTORY_ENTRY_BOUND_IMPORT
         read_lazy_directories(pe)
+        read_exceptions(pe)
+
+
+def read_exceptions(pe):
+    """Builds the lazy exception directory and reads every unwind code."""
+    for entry in pe.DIRECTORY_ENTRY_EXCEPTION:
+        info = entry.unwindinfo
+        if info is not None:
+            info.get_chained_function_entry()
+            [str(code) for code in getattr(info, "UnwindCodes", [])]
+
+
+def test_crafted_exception_directory_never_crashes():
+    data = (Path(__file__).parent / "fixtures" / "crafted" / "exceptions.dll").read_bytes()
+    rng = random.Random(0)
+    for _ in range(500):
+        mutated = bytearray(data)
+        for _ in range(rng.randint(1, 16)):
+            # Past the headers, so the edits land in the unwind records and the table.
+            mutated[rng.randrange(0x400, len(mutated))] = rng.randrange(256)
+        read_exceptions(peoxide.PE(data=bytes(mutated)))
 
 
 def read_lazy_directories(pe):

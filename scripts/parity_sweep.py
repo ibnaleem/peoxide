@@ -21,6 +21,7 @@ import peoxide
 DIRECTORIES = [
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXCEPTION"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DEBUG"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BASERELOC"],
@@ -83,7 +84,54 @@ def probes(pe):
     return sorted(rvas), sorted(offsets)
 
 
-def details(pe, rvas, offsets):
+UNWIND_FIELDS = [
+    "Version",
+    "Flags",
+    "SizeOfProlog",
+    "CountOfCodes",
+    "FrameRegister",
+    "FrameOffset",
+    "UNW_FLAG_EHANDLER",
+    "UNW_FLAG_UHANDLER",
+    "UNW_FLAG_CHAININFO",
+]
+OPTIONAL_UNWIND_FIELDS = ["ExceptionHandler", "FunctionEntry", "SizeOfEpilog"]
+CODE_METHODS = ["get_offset", "get_alloc_size"]
+
+
+def exceptions(pe, reference):
+    """Every exception entry, unwind record and code, with sharing and chaining as list
+    indexes. Code field names come from `reference`, the pefile.PE of the same file."""
+    entries = getattr(pe, "DIRECTORY_ENTRY_EXCEPTION", [])
+    references = getattr(reference, "DIRECTORY_ENTRY_EXCEPTION", [])
+    index = {id(e): i for i, e in enumerate(entries)}
+    first_user = {}
+
+    def code(c, ref):
+        names = [name for names in ref.struct.__keys_ext__ for name in names]
+        methods = [getattr(c, m)() if hasattr(c, m) else None for m in CODE_METHODS]
+        return type(c).__name__, str(c), c.is_valid(), methods, [getattr(c.struct, n, None) for n in names]
+
+    def row(i, entry, ref):
+        info = entry.unwindinfo
+        fields = (entry.struct.BeginAddress, entry.struct.EndAddress, entry.struct.UnwindData)
+        if info is None:
+            return fields
+        chained = info.get_chained_function_entry()
+        codes = getattr(info, "UnwindCodes", None)
+        return (
+            fields,
+            first_user.setdefault(id(info), i),
+            [getattr(info, f) for f in UNWIND_FIELDS],
+            [getattr(info, f, None) for f in OPTIONAL_UNWIND_FIELDS],
+            None if chained is None else index.get(id(chained), "not in list"),
+            None if codes is None else (len(codes), [code(c, r) for c, r in zip(codes, ref.unwindinfo.UnwindCodes)]),
+        )
+
+    return len(entries), [row(i, e, r) for i, (e, r) in enumerate(zip(entries, references))]
+
+
+def details(pe, rvas, offsets, reference):
     """Fields checked by the sweep but not read inside the benchmark timer."""
     return {
         "dos header": [getattr(pe.DOS_HEADER, field) for field in DOS_FIELDS],
@@ -126,6 +174,7 @@ def details(pe, rvas, offsets):
             )
             for d in getattr(pe, "DIRECTORY_ENTRY_BOUND_IMPORT", [])
         ],
+        "exceptions": exceptions(pe, reference),
         "rich header": rich_header(pe),
         "tls": tls(pe),
         "resources": resource_tree(getattr(pe, "DIRECTORY_ENTRY_RESOURCE", None)),
@@ -259,10 +308,10 @@ def rich_header(pe):
 def differences(ours, reference):
     """Names of the summary parts where a peoxide.PE and a pefile.PE disagree."""
     rvas, offsets = probes(reference)
-    theirs_summary = summarize(reference) | details(reference, rvas, offsets)
+    theirs_summary = summarize(reference) | details(reference, rvas, offsets, reference)
     capped = any("Assuming corrupt" in w for w in reference.get_warnings())
     ours_summary = summarize(ours, len(theirs_summary["exports"]) if capped else None)
-    ours_summary |= details(ours, rvas, offsets)
+    ours_summary |= details(ours, rvas, offsets, reference)
     theirs_summary["imphash"], ours_summary["imphash"] = reference.get_imphash(), ours.get_imphash()
     export_dir = getattr(reference, "DIRECTORY_ENTRY_EXPORT", None)
     names = [s.name for s in export_dir.symbols] if export_dir else []
