@@ -1,13 +1,13 @@
 use pyo3::IntoPyObjectExt;
 use pyo3::buffer::PyBuffer;
-use pyo3::conversion::FromPyObjectOwned;
 use pyo3::exceptions::{
     PyNotImplementedError, PyOSError, PyOverflowError, PyTypeError, PyValueError,
 };
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyByteArray, PyBytes, PyList, PySlice, PyTuple, PyType};
+use pyo3::types::{PyBytes, PyList, PyTuple};
 
+use crate::data::{bytes_from_data, extract_packable, saturating_i64, slice, uint_from_data};
 use crate::directories::{
     BaseRelocationData, BoundImportDescData, DebugData, ExportDirData, ImportDescData, RichHeader,
     TlsData,
@@ -745,105 +745,6 @@ const MAX_UNICODE_STRING_LENGTH: i64 = 1 << 16;
 /// pefile's default `max_virtual_address` for `get_memory_mapped_image`.
 const MAX_MAPPED_VIRTUAL_ADDRESS: i64 = 0x1000_0000;
 const DWORD_MASK: u32 = 0xFFFF_FFFC;
-
-/// `value` as an `i64`, pinned to the nearest end of the range like `SaturatingI64`.
-fn saturating_i64(value: &Bound<'_, PyAny>) -> PyResult<i64> {
-    value.extract::<SaturatingI64>().map(|SaturatingI64(v)| v)
-}
-
-/// pefile's `get_{word,dword,qword}_from_data`, with Python's slicing and `struct.unpack`
-/// behaviour for negative indices: counted from the end, or `struct.error` on a short slice.
-fn uint_from_data(
-    data: &Bound<'_, PyAny>,
-    offset: &Bound<'_, PyAny>,
-    size: usize,
-) -> PyResult<Option<u64>> {
-    let len = data.len()? as i128;
-    let index = i128::from(saturating_i64(offset)?);
-    let size_i = size as i128;
-    if (index + 1) * size_i > len {
-        return Ok(None);
-    }
-    let python_index = |i: i128| (if i < 0 { i + len } else { i }).clamp(0, len) as usize;
-    let (start, end) = (
-        python_index(index * size_i),
-        python_index((index + 1) * size_i),
-    );
-    let end = end.max(start);
-    let read = |chunk: &[u8]| {
-        (chunk.len() == size).then(|| {
-            chunk
-                .iter()
-                .rev()
-                .fold(0, |value, &byte| (value << 8) | u64::from(byte))
-        })
-    };
-    let value = match data.cast::<PyBytes>() {
-        Ok(bytes) => read(bytes.as_bytes().get(start..end).unwrap_or_default()),
-        Err(_) => {
-            PyBuffer::<u8>::get(data)
-                .map_err(|_| PyTypeError::new_err("a bytes-like object is required"))?;
-            // Copy only the slice read: a whole-buffer copy made each call O(len).
-            let py = data.py();
-            let slice = data.get_item(PySlice::new(py, start as isize, end as isize, 1))?;
-            let chunk = py
-                .get_type::<PyBytes>()
-                .call1((slice,))?
-                .cast_into::<PyBytes>()?;
-            read(chunk.as_bytes())
-        }
-    };
-    match value {
-        Some(value) => Ok(Some(value)),
-        None => Err(struct_error(
-            data.py(),
-            format!("unpack requires a buffer of {size} bytes"),
-        )),
-    }
-}
-
-/// pefile's `get_bytes_from_data`, through Python's own comparison and slicing.
-fn bytes_from_data<'py>(
-    offset: &Bound<'py, PyAny>,
-    data: &Bound<'py, PyAny>,
-) -> PyResult<Bound<'py, PyAny>> {
-    let py = data.py();
-    if offset.gt(data.len()?)? {
-        return Ok(PyBytes::new(py, b"").into_any());
-    }
-    let tail = data.get_item(slice(py, offset, py.None().bind(py))?)?;
-    if tail.is_instance_of::<PyByteArray>() {
-        return py.get_type::<PyBytes>().call1((tail,));
-    }
-    Ok(tail)
-}
-
-/// `slice(start, stop)` for any Python objects, so big integers keep their meaning.
-fn slice<'py>(
-    py: Python<'py>,
-    start: &Bound<'py, PyAny>,
-    stop: &Bound<'py, PyAny>,
-) -> PyResult<Bound<'py, PyAny>> {
-    py.get_type::<PySlice>().call1((start, stop))
-}
-
-/// `value` as `T`, raising `struct.error` as `struct.pack` does when it does not fit.
-fn extract_packable<'py, T: FromPyObjectOwned<'py>>(value: &Bound<'py, PyAny>) -> PyResult<T> {
-    value
-        .extract::<T>()
-        .map_err(|e| struct_error(value.py(), Into::<PyErr>::into(e).to_string()))
-}
-
-fn struct_error(py: Python<'_>, message: String) -> PyErr {
-    match py
-        .import("struct")
-        .and_then(|module| module.getattr("error"))
-        .and_then(|error| error.cast_into::<PyType>().map_err(Into::into))
-    {
-        Ok(error) => PyErr::from_type(error, message),
-        Err(e) => e,
-    }
-}
 
 impl PE {
     /// `None` for a negative RVA. pefile would read from the end of the headers or the file.
