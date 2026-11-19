@@ -119,6 +119,14 @@ def debug(section, pdb):
     return section.put(entry), len(entry)
 
 
+def shared_debug(section, count, record_size):
+    """`count` CodeView entries that all point at one RSDS record of `record_size` bytes."""
+    record = b"RSDS" + bytes(20) + b"p" * (record_size - 24)
+    rva = section.put(record)
+    entry = struct.pack("<2I2H4I", 0, 0, 0, 0, CODEVIEW, record_size, rva, section.offset(rva))
+    return section.put(entry * count), len(entry) * count
+
+
 def version_block(key, value=b"", children=(), text=False, value_length=None):
     """A VS_VERSIONINFO-style node. wLength covers the children but not trailing padding."""
     length = len(value) if value_length is None else value_length
@@ -270,6 +278,10 @@ def crafted():
 
     huge_count = resource_root(struct.pack("<2I4H", 0, 0, 0, 0, 0xFFFF, 0xFFFF))
     self_reference = resource_root(struct.pack("<2I4H2I", 0, 0, 0, 0, 0, 1, RT_VERSION, 0x80000000))
+    leaf = 16 + 8 * 40
+    long_name = struct.pack("<2I4H", 0, 0, 0, 0, 40, 0) + struct.pack("<2I", 0x80000000 | leaf + 16, leaf) * 40
+    long_name += struct.pack("<4IH", 0x2000, 4, 0, 0, 0xFFFF) + b"A\0" * 0xFFFF
+    shared_resource_names = resource_root(long_name)
     reloc_block = struct.pack("<2I2H", TEXT_RVA, 12, 0xA000, 0)
     long_relocations = [
         (b".text", CODE, code),
@@ -304,20 +316,45 @@ def crafted():
             },
         ),
     ]
+
+    def overlapping_version(section, languages=64):
+        subdirectory = 0x80000000
+        tree = struct.pack("<2I4H2I", 0, 0, 0, 0, 0, 1, RT_VERSION, subdirectory | 24)
+        tree += struct.pack("<2I4H2I", 0, 0, 0, 0, 0, 1, 1, subdirectory | 48)
+        tree += struct.pack("<2I4H", 0, 0, 0, 0, 0, languages)
+        leaf = len(tree) + 8 * languages
+        tree += b"".join(struct.pack("<2I", 0x409 + i, leaf) for i in range(languages))
+        fixed = struct.pack("<13I", 0xFEEF04BD, *[0] * 12)
+        blob = struct.pack("<3H", 0x1000, len(fixed), 0) + "VS_VERSION_INFO\0".encode("utf-16-le")
+        blob += bytes(-len(blob) % 4) + fixed + b"\x01\x00" * 0x800
+        tree += struct.pack("<4I", section.rva + leaf + 16, len(blob), 0, 0)
+        return {DIR_RESOURCE: (section.put(tree + blob), len(tree) + len(blob))}
+
     return {
         # 2,048 import descriptors share one table of 1,000 imports.
         "shared_thunks.dll": build(AMD64, True, 0x2022, GUI, shared_thunks),
         # Imports stay under the cap, and 16 delay-import descriptors sharing one table cross it.
         "shared_delay_thunks.dll": build(AMD64, True, 0x2022, GUI, shared_delay_thunks),
+        # 300 debug entries share one CodeView record with a 4,072-byte PDB name.
+        "shared_codeview.dll": build(
+            AMD64, True, 0x2022, GUI, [(b".rdata", DATA, lambda s: {DIR_DEBUG: shared_debug(s, 300, 4096)})]
+        ),
         # The resource root claims 131,070 entries in a 16-byte directory.
         "huge_count.dll": build(AMD64, True, 0x2022, GUI, huge_count),
         # The resource root's only entry is the root itself.
         "self_reference.dll": build(AMD64, True, 0x2022, GUI, self_reference),
+        # 40 named resource entries share one 65,535-unit name: 5 MiB of names if all kept.
+        "shared_resource_names.dll": build(AMD64, True, 0x2022, GUI, shared_resource_names),
         # Import addresses (ImageBase + RVA) run past 2**64 and past 2**63.
         "top_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0xFFFFFFFFFFFFF000),
         "signed_image_base.dll": build(AMD64, True, 0x2022, GUI, import_tables, 0x7FFFFFFFFFFFF000),
         # The base-relocation directory claims 256 MiB in a 2 KiB file.
         "long_relocations.dll": build(AMD64, True, 0x2022, GUI, long_relocations),
+        # 64 languages share one RT_VERSION leaf whose FileInfo walk finds a block every 4 bytes,
+        # each key running on through 4 KiB of 0x0001 units: about 64 MiB of keys if all kept.
+        "overlapping_version.dll": build(
+            AMD64, True, 0x2022, GUI, [(b".text", CODE, code), (b".rsrc", DATA, overlapping_version)]
+        ),
     }
 
 
