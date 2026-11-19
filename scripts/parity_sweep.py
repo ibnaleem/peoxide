@@ -9,6 +9,7 @@ Two deliberate pefile behaviours are normalised away before comparing:
   MAX_SYMBOL_EXPORT_COUNT ordinals; peoxide returns the full table.
 """
 
+import hashlib
 import sys
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
@@ -118,6 +119,12 @@ def details(pe, rvas, offsets):
         "rich header": rich_header(pe),
         "resources": resource_tree(getattr(pe, "DIRECTORY_ENTRY_RESOURCE", None)),
         "version info": version_info(pe),
+        "pe type": pe.PE_TYPE,
+        "has relocs": pe.has_relocs(),
+        "resource strings": pe.get_resources_strings(),
+        "memory mapped image": hashlib.sha256(pe.get_memory_mapped_image()).hexdigest(),
+        "utf-16 strings": [outcome(pe.get_string_u_at_rva, rva, 64) for rva in rvas],
+        "physical addresses": [pe.get_physical_by_rva(rva) for rva in rvas],
     }
 
 
