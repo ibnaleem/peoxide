@@ -22,13 +22,18 @@ import peoxide
 DIRECTORIES = [
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXCEPTION"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DEBUG"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BASERELOC"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_TLS"],
 ]
 DEBUG_FIELDS = ["Characteristics", "TimeDateStamp", "Type", "SizeOfData", "PointerToRawData"]
 CODEVIEW_FIELDS = ["Signature_String", "Age", "PdbFileName", "CvHeaderSignature", "Signature"]
+TLS_FIELDS = [entry.split(",")[1] for entry in pefile.PE.__IMAGE_TLS_DIRECTORY_format__[1]]
 
 
 def summarize(pe, export_limit=None):
@@ -80,7 +85,54 @@ def probes(pe):
     return sorted(rvas), sorted(offsets)
 
 
-def details(pe, rvas, offsets):
+UNWIND_FIELDS = [
+    "Version",
+    "Flags",
+    "SizeOfProlog",
+    "CountOfCodes",
+    "FrameRegister",
+    "FrameOffset",
+    "UNW_FLAG_EHANDLER",
+    "UNW_FLAG_UHANDLER",
+    "UNW_FLAG_CHAININFO",
+]
+OPTIONAL_UNWIND_FIELDS = ["ExceptionHandler", "FunctionEntry", "SizeOfEpilog"]
+CODE_METHODS = ["get_offset", "get_alloc_size"]
+
+
+def exceptions(pe, reference):
+    """Every exception entry, unwind record and code, with sharing and chaining as list
+    indexes. Code field names come from `reference`, the pefile.PE of the same file."""
+    entries = getattr(pe, "DIRECTORY_ENTRY_EXCEPTION", [])
+    references = getattr(reference, "DIRECTORY_ENTRY_EXCEPTION", [])
+    index = {id(e): i for i, e in enumerate(entries)}
+    first_user = {}
+
+    def code(c, ref):
+        names = [name for names in ref.struct.__keys_ext__ for name in names]
+        methods = [getattr(c, m)() if hasattr(c, m) else None for m in CODE_METHODS]
+        return type(c).__name__, str(c), c.is_valid(), methods, [getattr(c.struct, n, None) for n in names]
+
+    def row(i, entry, ref):
+        info = entry.unwindinfo
+        fields = (entry.struct.BeginAddress, entry.struct.EndAddress, entry.struct.UnwindData)
+        if info is None:
+            return fields
+        chained = info.get_chained_function_entry()
+        codes = getattr(info, "UnwindCodes", None)
+        return (
+            fields,
+            first_user.setdefault(id(info), i),
+            [getattr(info, f) for f in UNWIND_FIELDS],
+            [getattr(info, f, None) for f in OPTIONAL_UNWIND_FIELDS],
+            None if chained is None else index.get(id(chained), "not in list"),
+            None if codes is None else (len(codes), [code(c, r) for c, r in zip(codes, ref.unwindinfo.UnwindCodes)]),
+        )
+
+    return len(entries), [row(i, e, r) for i, (e, r) in enumerate(zip(entries, references))]
+
+
+def details(pe, rvas, offsets, reference):
     """Fields checked by the sweep but not read inside the benchmark timer."""
     return {
         "dos header": [getattr(pe.DOS_HEADER, field) for field in DOS_FIELDS],
@@ -112,11 +164,20 @@ def details(pe, rvas, offsets):
             for d in getattr(pe, "DIRECTORY_ENTRY_DEBUG", [])
             if d.struct.Type != 4
         ],
-        "relocations": [
-            (b.struct.VirtualAddress, b.struct.SizeOfBlock, [(e.type, e.rva) for e in b.entries])
-            for b in getattr(pe, "DIRECTORY_ENTRY_BASERELOC", [])
+        "relocations": relocation_blocks(getattr(pe, "DIRECTORY_ENTRY_BASERELOC", [])),
+        "load config": load_config(pe),
+        "bound imports": [
+            (
+                d.struct.TimeDateStamp,
+                d.struct.NumberOfModuleForwarderRefs,
+                d.name,
+                [(r.struct.TimeDateStamp, r.name) for r in d.entries],
+            )
+            for d in getattr(pe, "DIRECTORY_ENTRY_BOUND_IMPORT", [])
         ],
+        "exceptions": exceptions(pe, reference),
         "rich header": rich_header(pe),
+        "tls": tls(pe),
         "resources": resource_tree(getattr(pe, "DIRECTORY_ENTRY_RESOURCE", None)),
         "version info": version_info(pe),
         "pe type": pe.PE_TYPE,
@@ -126,6 +187,66 @@ def details(pe, rvas, offsets):
         "utf-16 strings": [outcome(pe.get_string_u_at_rva, rva, 64) for rva in rvas],
         "physical addresses": [pe.get_physical_by_rva(rva) for rva in rvas],
     }
+
+
+MISSING = "missing"
+RELOCATION_ENTRY_FIELDS = [
+    "Data",
+    "PageRelativeOffset",
+    "IndirectCall",
+    "IATIndex",
+    "RexWPrefix",
+    "CfgCheck",
+    "Reserved",
+    "RegisterNumber",
+]
+FUNCTION_OVERRIDE_FIELDS = ["OriginalRva", "BDDOffset", "RvaSize", "BaseRelocSize"]
+LOAD_CONFIG_FIELDS = [
+    entry.split(",")[1] for entry in pefile.PE.__IMAGE_LOAD_CONFIG_DIRECTORY64_format__[1]
+]
+
+
+def fields(struct, names):
+    return [getattr(struct, name, MISSING) for name in names]
+
+
+def relocation_blocks(blocks):
+    return [
+        (
+            b.struct.VirtualAddress,
+            b.struct.SizeOfBlock,
+            [(getattr(e, "type", MISSING), e.rva, fields(e.struct, RELOCATION_ENTRY_FIELDS)) for e in b.entries],
+        )
+        for b in blocks
+    ]
+
+
+def load_config(pe):
+    """The structure's fields, `MISSING` where it stops short, and its dynamic relocations."""
+    config = getattr(pe, "DIRECTORY_ENTRY_LOAD_CONFIG", None)
+    if config is None:
+        return None
+    dynamic = config.dynamic_relocations
+
+    def relocation(d):
+        header = (d.struct.Symbol, d.struct.BaseRelocSize, d.symbol)
+        if not hasattr(d, "func_relocs"):
+            return header, relocation_blocks(d.relocations)
+        functions = [
+            (
+                fields(f.struct, FUNCTION_OVERRIDE_FIELDS),
+                f.func_rva,
+                f.override_rvas,
+                relocation_blocks(f.relocations),
+            )
+            for f in d.func_relocs
+        ]
+        return header, functions, [fields(b.struct, ["Left", "Right", "Value"]) for b in d.bdd_relocs]
+
+    return fields(config.struct, LOAD_CONFIG_FIELDS), dynamic and [relocation(d) for d in dynamic]
+def tls(pe):
+    entry = getattr(pe, "DIRECTORY_ENTRY_TLS", None)
+    return entry and [getattr(entry.struct, f) for f in TLS_FIELDS]
 
 
 def resource_tree(directory):
@@ -194,10 +315,10 @@ def rich_header(pe):
 def differences(ours, reference):
     """Names of the summary parts where a peoxide.PE and a pefile.PE disagree."""
     rvas, offsets = probes(reference)
-    theirs_summary = summarize(reference) | details(reference, rvas, offsets)
+    theirs_summary = summarize(reference) | details(reference, rvas, offsets, reference)
     capped = any("Assuming corrupt" in w for w in reference.get_warnings())
     ours_summary = summarize(ours, len(theirs_summary["exports"]) if capped else None)
-    ours_summary |= details(ours, rvas, offsets)
+    ours_summary |= details(ours, rvas, offsets, reference)
     theirs_summary["imphash"], ours_summary["imphash"] = reference.get_imphash(), ours.get_imphash()
     export_dir = getattr(reference, "DIRECTORY_ENTRY_EXPORT", None)
     names = [s.name for s in export_dir.symbols] if export_dir else []

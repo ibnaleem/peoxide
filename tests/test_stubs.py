@@ -18,6 +18,11 @@ SAMPLES = [
     WINDIR / "System32" / "user32.dll",
     FIXTURES / "sample64.dll",
     FIXTURES / "sample32.exe",
+    # Every unwind code layout, which the system DLLs above do not all have.
+    FIXTURES / "exceptions64.dll",
+    # Every kind of dynamic relocation.
+    FIXTURES / "load_config64.dll",
+    FIXTURES / "bound_imports.dll",
 ]
 
 
@@ -37,12 +42,13 @@ def stub_attributes():
 def runtime_classes():
     """`{class name: (class, public attribute names)}` for every peoxide object reachable from
     PE."""
-    found, seen = {}, set()
+    # `seen` holds each object, so a value built on access can't be freed and its id reused.
+    found, seen = {}, {}
 
     def walk(obj):
         if id(obj) in seen:
             return
-        seen.add(id(obj))
+        seen[id(obj)] = obj
         if isinstance(obj, list):
             for item in obj:
                 walk(item)
@@ -62,9 +68,10 @@ def runtime_classes():
             names.add(name)
             walk(value)
 
-    for path in SAMPLES:
-        if path.exists():
-            walk(peoxide.PE(str(path)))
+    # Held until the walk ends, so a freed object's id cannot be reused and look already seen.
+    pes = [peoxide.PE(str(path)) for path in SAMPLES if path.exists()]
+    for pe in pes:
+        walk(pe)
     found.pop("PE", None)
     return found
 
