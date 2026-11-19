@@ -2,7 +2,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::{bytes, hexdigest, no_panic};
+use crate::{SaturatingI64, bytes, hexdigest, no_panic};
 
 /// Exposed fields are Python objects for the reason given on `py_class!`.
 #[pyclass(frozen, dict, module = "peoxide")]
@@ -81,10 +81,11 @@ impl Section {
     fn get_data<'py>(
         &self,
         py: Python<'py>,
-        start: Option<i64>,
-        length: Option<i64>,
+        start: Option<SaturatingI64>,
+        length: Option<SaturatingI64>,
         ignore_padding: bool,
     ) -> PyResult<Bound<'py, PyBytes>> {
+        let (start, length) = (start.map(|start| start.0), length.map(|length| length.0));
         Ok(PyBytes::new(
             py,
             self.data(py, start, length, ignore_padding)?,
@@ -113,23 +114,30 @@ impl Section {
         hexdigest(py, "sha512", self.data(py, None, None, false)?)
     }
 
-    fn contains_rva(&self, rva: i64) -> PyResult<bool> {
-        no_panic(|| self.layout.contains_rva(rva))
+    fn contains_rva(&self, rva: SaturatingI64) -> PyResult<bool> {
+        no_panic(|| self.layout.contains_rva(rva.0))
     }
 
-    fn contains(&self, rva: i64) -> PyResult<bool> {
-        no_panic(|| self.layout.contains_rva(rva))
+    fn contains(&self, rva: SaturatingI64) -> PyResult<bool> {
+        no_panic(|| self.layout.contains_rva(rva.0))
     }
 
-    fn contains_offset(&self, offset: i64) -> PyResult<bool> {
-        no_panic(|| self.layout.contains_offset(&self.table, offset))
+    fn contains_offset(&self, offset: SaturatingI64) -> PyResult<bool> {
+        no_panic(|| self.layout.contains_offset(&self.table, offset.0))
     }
 
-    fn get_offset_from_rva(&self, rva: i64) -> PyResult<i64> {
-        no_panic(|| self.layout.offset_from_rva(rva))
+    /// pefile's arithmetic done on the Python value, so an RVA beyond 64 bits maps exactly.
+    fn get_offset_from_rva<'py>(&self, rva: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let _: SaturatingI64 = rva.extract()?; // TypeError for anything but an integer
+        rva.sub(self.layout.virtual_address)?
+            .add(self.layout.pointer_to_raw_data)
     }
 
-    fn get_rva_from_offset(&self, offset: i64) -> PyResult<i64> {
-        no_panic(|| self.layout.rva_from_offset(offset))
+    /// The inverse of `get_offset_from_rva`, done the same way.
+    fn get_rva_from_offset<'py>(&self, offset: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        let _: SaturatingI64 = offset.extract()?; // TypeError for anything but an integer
+        offset
+            .sub(self.layout.pointer_to_raw_data)?
+            .add(self.layout.virtual_address)
     }
 }

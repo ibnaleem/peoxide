@@ -248,7 +248,10 @@ impl Pe {
         }
         let end = length.map_or(i64::MAX, |length| rva.saturating_add(length));
         if rva < self.header_size {
-            return Some(clamp((rva, end.min(self.header_size)), self.file_size));
+            // pefile slices the headers here, so a negative bound counts back from their end.
+            let header = self.header_size.min(self.file_size as i64);
+            let wrap = |bound: i64| if bound < 0 { bound + header } else { bound };
+            return Some(clamp((wrap(rva), wrap(end).min(header)), self.file_size));
         }
         (rva < self.file_size as i64).then(|| clamp((rva, end), self.file_size))
     }
