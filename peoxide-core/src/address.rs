@@ -259,6 +259,40 @@ impl Pe {
         little_endian(data.get(self.data_range(rva, Some(size as i64))?)?, size)
     }
 
+    /// pefile's `get_memory_mapped_image` as `(image offset, file range)` pieces, in order and
+    /// without overlaps. Bytes no piece covers are zero, up to the end of the last piece.
+    /// The headers come first, then each section's data at its aligned address, which pads
+    /// with zeros or cuts off whatever is already past it. Sections at or above
+    /// `max_virtual_address`, empty ones, and ones whose raw data runs past the file are skipped.
+    pub fn memory_mapped_image(&self, max_virtual_address: i64) -> Vec<(usize, Range<usize>)> {
+        let file_size = self.file_size as i64;
+        let mut pieces = vec![(0, clamp((0, self.header_size), self.file_size))];
+        for (section, layout) in self.sections.iter().zip(&self.layouts) {
+            if section.virtual_size == 0 && section.size_of_raw_data == 0 {
+                continue;
+            }
+            let raw_size = section.size_of_raw_data as i64;
+            let raw_pointer = (section.pointer_to_raw_data & SECTOR_MASK) as i64;
+            if raw_size > file_size
+                || raw_pointer > file_size
+                || raw_size + raw_pointer > file_size
+                || layout.virtual_address >= max_virtual_address
+            {
+                continue;
+            }
+            let start = layout.virtual_address as usize;
+            while pieces.last().is_some_and(|(at, _)| *at >= start) {
+                pieces.pop();
+            }
+            if let Some((at, range)) = pieces.last_mut() {
+                range.end = range.end.min(range.start + (start - *at));
+            }
+            let range = layout.data_range(section, None, None, false);
+            pieces.push((start, clamp(range, self.file_size)));
+        }
+        pieces
+    }
+
     /// pefile's `get_string_at_rva`: the bytes at `rva` up to the first NUL, at most
     /// `max_length` of them. An RVA outside every section is read as a file offset.
     pub fn string_at_rva<'a>(&self, data: &'a [u8], rva: i64, max_length: i64) -> &'a [u8] {
