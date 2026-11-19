@@ -25,6 +25,7 @@ DIRECTORIES = [
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DEBUG"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BASERELOC"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"],
+    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT"],
     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_TLS"],
 ]
 DEBUG_FIELDS = ["Characteristics", "TimeDateStamp", "Type", "SizeOfData", "PointerToRawData"]
@@ -116,6 +117,15 @@ def details(pe, rvas, offsets):
         "relocations": [
             (b.struct.VirtualAddress, b.struct.SizeOfBlock, [(e.type, e.rva) for e in b.entries])
             for b in getattr(pe, "DIRECTORY_ENTRY_BASERELOC", [])
+        ],
+        "bound imports": [
+            (
+                d.struct.TimeDateStamp,
+                d.struct.NumberOfModuleForwarderRefs,
+                d.name,
+                [(r.struct.TimeDateStamp, r.name) for r in d.entries],
+            )
+            for d in getattr(pe, "DIRECTORY_ENTRY_BOUND_IMPORT", [])
         ],
         "rich header": rich_header(pe),
         "tls": tls(pe),

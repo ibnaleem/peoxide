@@ -1,4 +1,6 @@
 mod address;
+mod bound;
+pub use bound::{BoundForwarderRef, BoundImportDescriptor};
 mod budget;
 mod checksum;
 mod debug;
@@ -432,7 +434,7 @@ mod tests {
 
     #[test]
     fn crafted_fixtures_parse_without_panicking() {
-        let crafted: [&[u8]; 10] = [
+        let crafted: [&[u8]; 16] = [
             include_bytes!("../../tests/fixtures/crafted/shared_thunks.dll"),
             include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll"),
             include_bytes!("../../tests/fixtures/crafted/huge_count.dll"),
@@ -440,6 +442,12 @@ mod tests {
             include_bytes!("../../tests/fixtures/crafted/top_image_base.dll"),
             include_bytes!("../../tests/fixtures/crafted/signed_image_base.dll"),
             include_bytes!("../../tests/fixtures/crafted/long_relocations.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_huge_count.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_bad_names.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_name_outside.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_truncated.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_in_section.dll"),
+            include_bytes!("../../tests/fixtures/crafted/bound_shared_names.dll"),
             include_bytes!("../../tests/fixtures/crafted/tls_size_zero.dll"),
             include_bytes!("../../tests/fixtures/crafted/tls_outside_sections.dll"),
             include_bytes!("../../tests/fixtures/crafted/overlapping_version.dll"),
@@ -448,6 +456,7 @@ mod tests {
         for data in crafted {
             if let Ok(pe) = parse(data) {
                 let _ = pe.parse_relocations(data);
+                let _ = pe.parse_bound_imports(data);
             }
         }
     }

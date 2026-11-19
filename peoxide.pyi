@@ -289,6 +289,29 @@ class _BaseRelocationData:
     entries: list[_RelocationData]
 
 @final
+class _BoundImportDescriptor:
+    TimeDateStamp: int
+    OffsetModuleName: int
+    NumberOfModuleForwarderRefs: int
+
+@final
+class _BoundForwarderRef:
+    TimeDateStamp: int
+    OffsetModuleName: int
+    Reserved: int
+
+@final
+class _BoundImportRefData:
+    struct: _BoundForwarderRef
+    name: bytes
+
+@final
+class _BoundImportDescData:
+    struct: _BoundImportDescriptor
+    name: bytes
+    entries: list[_BoundImportRefData]
+
+@final
 class _ResourceDirectoryStruct:
     Characteristics: int
     TimeDateStamp: int
@@ -414,6 +437,8 @@ class PE:
     def DIRECTORY_ENTRY_DELAY_IMPORT(self) -> list[_ImportDescData]: ...
     @property
     def DIRECTORY_ENTRY_BASERELOC(self) -> list[_BaseRelocationData]: ...
+    @property
+    def DIRECTORY_ENTRY_BOUND_IMPORT(self) -> list[_BoundImportDescData]: ...
     @property
     def DIRECTORY_ENTRY_RESOURCE(self) -> _ResourceDirData | None: ...
     # The version attributes raise AttributeError when the file has no version information.
