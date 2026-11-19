@@ -522,9 +522,9 @@ impl PE {
     }
 
     /// True when the file has at least one readable base relocation block.
+    /// Reads the cached `DIRECTORY_ENTRY_BASERELOC`, so only the first call parses.
     fn has_relocs(&self, py: Python<'_>) -> PyResult<bool> {
-        let file = self.data.as_bytes(py);
-        no_panic(|| !self.pe.parse_relocations(file).is_empty())
+        Ok(!self.DIRECTORY_ENTRY_BASERELOC(py)?.bind(py).is_empty())
     }
 
     /// Every string in the RT_STRING tables, in resource-tree order.
