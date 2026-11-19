@@ -254,6 +254,31 @@ def test_section_contains(pair):
             assert mine.contains_offset(offset) == ref.contains_offset(offset), (mine.Name, hex(offset))
 
 
+@pytest.mark.parametrize("value", [2**64, 2**70, -(2**64)])
+def test_addresses_beyond_64_bits_follow_pefile(pair, value):
+    ours, theirs = pair
+    for method in ("get_data", "get_offset_from_rva", "get_rva_from_offset"):
+        mine, ref = outcome(getattr(ours, method), value), outcome(getattr(theirs, method), value)
+        assert mine == ref, method
+    assert ours.get_data(0x40, value) == theirs.get_data(0x40, value)
+    for method in ("get_section_by_rva", "get_section_by_offset"):
+        assert getattr(ours, method)(value) is getattr(theirs, method)(value) is None, method
+    for mine, ref in zip(ours.sections, theirs.sections):
+        assert mine.get_data(value) == ref.get_data(value), mine.Name
+        va = ref.VirtualAddress
+        assert mine.get_data(va, value) == ref.get_data(va, value), mine.Name
+        for method in ("contains_rva", "contains", "contains_offset"):
+            assert getattr(mine, method)(value) == getattr(ref, method)(value), (mine.Name, method)
+        for method in ("get_offset_from_rva", "get_rva_from_offset"):
+            assert getattr(mine, method)(value) == getattr(ref, method)(value), (mine.Name, method)
+
+
+@pytest.mark.parametrize("rva, length", [(-5, 10), (-5, None), (-16, 8), (-1, 1)])
+def test_negative_rvas_slice_the_header_like_pefile(pair, rva, length):
+    ours, theirs = pair
+    assert ours.get_data(rva, length) == theirs.get_data(rva, length)
+
+
 def test_overlay(pair):
     ours, theirs = pair
     assert ours.get_overlay_data_start_offset() == theirs.get_overlay_data_start_offset()
