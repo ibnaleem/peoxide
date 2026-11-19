@@ -72,7 +72,14 @@ def test_first_reads_of_a_directory_on_many_threads_give_one_object():
 
     def work():
         start.wait()
-        seen.append((pe.DIRECTORY_ENTRY_IMPORT, pe.DIRECTORY_ENTRY_EXPORT, pe.DIRECTORY_ENTRY_BASERELOC))
+        seen.append(
+            (
+                pe.DIRECTORY_ENTRY_IMPORT,
+                pe.DIRECTORY_ENTRY_EXPORT,
+                pe.DIRECTORY_ENTRY_BASERELOC,
+                pe.DIRECTORY_ENTRY_LOAD_CONFIG,
+            )
+        )
 
     threads = [threading.Thread(target=work) for _ in range(8)]
     for thread in threads:
@@ -98,3 +105,4 @@ def test_a_directory_that_points_outside_the_file_does_not_reject_it(directory):
     assert fingerprint(pe) == fingerprint(peoxide.PE(data=DATA))
     assert pe.DIRECTORY_ENTRY_DEBUG == [] or directory != DEBUG
     assert pe.DIRECTORY_ENTRY_BASERELOC == [] or directory != BASERELOC
+    assert pe.DIRECTORY_ENTRY_LOAD_CONFIG is None or directory != LOAD_CONFIG

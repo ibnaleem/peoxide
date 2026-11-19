@@ -1,7 +1,7 @@
 #![allow(non_snake_case)] // Python attribute names follow pefile (e_lfanew, NumberOfSections, ...)
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyAttributeError, PyException};
+use pyo3::exceptions::{PyAttributeError, PyException, PyOverflowError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList};
 
@@ -42,6 +42,7 @@ mod directories;
 mod exception;
 mod flags;
 mod headers;
+mod load_config;
 mod pe;
 mod resource;
 mod section;
@@ -88,6 +89,24 @@ fn hexdigest(py: Python<'_>, algorithm: &str, data: &[u8]) -> PyResult<String> {
         .call_method1("new", (algorithm, PyBytes::new(py, data)))?
         .call_method0("hexdigest")?
         .extract()
+}
+
+/// A Python integer as an `i64`, pinned to the nearest end of the range when it does not fit.
+/// No address or length that large can be inside a file, so the caller treats it as out of
+/// range, where an `OverflowError` would surprise code written for pefile.
+struct SaturatingI64(i64);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for SaturatingI64 {
+    type Error = PyErr;
+
+    fn extract(value: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        match value.extract::<i64>() {
+            Err(e) if e.is_instance_of::<PyOverflowError>(value.py()) => {
+                Ok(Self(if value.lt(0)? { i64::MIN } else { i64::MAX }))
+            }
+            other => other.map(Self),
+        }
+    }
 }
 
 #[pymodule]

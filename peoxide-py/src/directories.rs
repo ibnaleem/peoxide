@@ -1,5 +1,8 @@
+use peoxide_core::RelocationFormat;
 use pyo3::IntoPyObjectExt;
+use pyo3::exceptions::PyAttributeError;
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyList};
 
 use crate::flags::{EX_DLL_CHARACTERISTICS_FLAGS, with_flags};
@@ -158,25 +161,126 @@ py_class!(RichHeader from peoxide_core::RichHeader as (py, c) {
     clear_data: Py<PyBytes> = bytes(py, &c.clear_data),
 });
 
+py_class!(TlsDirectory from peoxide_core::TlsDirectory as (py, c) {
+    StartAddressOfRawData: u64 = c.start_address_of_raw_data,
+    EndAddressOfRawData: u64 = c.end_address_of_raw_data,
+    AddressOfIndex: u64 = c.address_of_index,
+    AddressOfCallBacks: u64 = c.address_of_callbacks,
+    SizeOfZeroFill: u32 = c.size_of_zero_fill,
+    Characteristics: u32 = c.characteristics,
+});
+
+py_class!(TlsData from peoxide_core::TlsDirectory as (py, c) {
+    r#struct: Py<TlsDirectory> = Py::new(py, TlsDirectory::new(py, c)?)?,
+});
+
 py_class!(BaseRelocation from peoxide_core::RelocationBlock as (py, c) {
     VirtualAddress: u32 = c.virtual_address,
     SizeOfBlock: u32 = c.size_of_block,
 });
 
-#[pyclass(frozen, get_all, module = "peoxide")]
+py_class!(BaseRelocationEntry from u32 as (py, c) {
+    Data: u32 = *c,
+});
+
+py_class!(ImportControlTransferDynamicRelocation from u32 as (py, c) {
+    PageRelativeOffset: u32 = *c & 0xFFF,
+    IndirectCall: u32 = (*c >> 12) & 1,
+    IATIndex: u32 = *c >> 13,
+});
+
+py_class!(IndirControlTransferDynamicRelocation from u32 as (py, c) {
+    PageRelativeOffset: u32 = *c & 0xFFF,
+    IndirectCall: u32 = (*c >> 12) & 1,
+    RexWPrefix: u32 = (*c >> 13) & 1,
+    CfgCheck: u32 = (*c >> 14) & 1,
+    Reserved: u32 = (*c >> 15) & 1,
+});
+
+py_class!(SwitchtableBranchDynamicRelocation from u32 as (py, c) {
+    PageRelativeOffset: u32 = *c & 0xFFF,
+    RegisterNumber: u32 = (*c >> 12) & 0xF,
+});
+
+#[pyclass(frozen, module = "peoxide")]
 struct RelocationData {
-    r#type: u16,
+    data: u32,
+    format: RelocationFormat,
+    #[pyo3(get)]
     rva: u64,
+    #[pyo3(get)]
     base_rva: u32,
+    /// Built on first access: a large image has tens of thousands of entries, and building
+    /// a second object for each would double the cost of `DIRECTORY_ENTRY_BASERELOC`.
+    structure: PyOnceLock<Py<PyAny>>,
+}
+
+#[pymethods]
+impl RelocationData {
+    /// Only on base relocation entries, as in pefile; the dynamic relocation bitfield
+    /// formats raise AttributeError.
+    #[getter]
+    fn r#type(&self) -> PyResult<u32> {
+        match self.format {
+            RelocationFormat::Base => Ok(self.data >> 12),
+            _ => Err(PyAttributeError::new_err("type")),
+        }
+    }
+
+    #[getter]
+    fn r#struct(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let data = &self.data;
+        self.structure
+            .get_or_try_init(py, || match self.format {
+                RelocationFormat::Base => BaseRelocationEntry::new(py, data)?.into_py_any(py),
+                RelocationFormat::ImportControlTransfer => {
+                    ImportControlTransferDynamicRelocation::new(py, data)?.into_py_any(py)
+                }
+                RelocationFormat::IndirControlTransfer => {
+                    IndirControlTransferDynamicRelocation::new(py, data)?.into_py_any(py)
+                }
+                RelocationFormat::SwitchtableBranch => {
+                    SwitchtableBranchDynamicRelocation::new(py, data)?.into_py_any(py)
+                }
+            })
+            .map(|s| s.clone_ref(py))
+    }
 }
 
 py_class!(BaseRelocationData from peoxide_core::RelocationBlock as (py, c) {
     r#struct: Py<BaseRelocation> = Py::new(py, BaseRelocation::new(py, c)?)?,
     entries: Py<PyList> = PyList::new(
         py,
-        c.entries
-            .iter()
-            .map(|e| RelocationData { r#type: e.reloc_type, rva: e.rva, base_rva: c.virtual_address }),
+        c.entries.iter().map(|e| RelocationData {
+            data: e.data,
+            format: c.format,
+            rva: e.rva,
+            base_rva: c.virtual_address,
+            structure: PyOnceLock::new(),
+        }),
     )?
     .unbind(),
+});
+
+py_class!(BoundImportDescriptor from peoxide_core::BoundImportDescriptor as (py, c) {
+    TimeDateStamp: u32 = c.time_date_stamp,
+    OffsetModuleName: u16 = c.offset_module_name,
+    NumberOfModuleForwarderRefs: u16 = c.number_of_module_forwarder_refs,
+});
+
+py_class!(BoundForwarderRef from peoxide_core::BoundForwarderRef as (py, c) {
+    TimeDateStamp: u32 = c.time_date_stamp,
+    OffsetModuleName: u16 = c.offset_module_name,
+    Reserved: u16 = c.reserved,
+});
+
+py_class!(BoundImportRefData from peoxide_core::BoundForwarderRef as (py, c) {
+    r#struct: Py<BoundForwarderRef> = Py::new(py, BoundForwarderRef::new(py, c)?)?,
+    name: Py<PyBytes> = bytes(py, &c.name),
+});
+
+py_class!(BoundImportDescData from peoxide_core::BoundImportDescriptor as (py, c) {
+    r#struct: Py<BoundImportDescriptor> = Py::new(py, BoundImportDescriptor::new(py, c)?)?,
+    name: Py<PyBytes> = bytes(py, &c.name),
+    entries: Py<PyList> = list(py, &c.entries, BoundImportRefData::new)?,
 });

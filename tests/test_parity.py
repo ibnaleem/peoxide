@@ -16,6 +16,11 @@ SYSTEM = [
     WINDIR / "System32" / "notepad.exe",
     WINDIR / "System32" / "drivers" / "ntfs.sys",
     WINDIR / "SysWOW64" / "kernel32.dll",
+    # The only file in System32, SysWOW64 or Program Files found with bound imports.
+    WINDIR / "SysWOW64" / "mfc40u.dll",
+    # The ones above have no TLS directory.
+    WINDIR / "System32" / "msvcrt.dll",
+    WINDIR / "SysWOW64" / "msvcrt.dll",
 ]
 SYSTEM = [p for p in SYSTEM if p.exists()]
 CORPUS = SYSTEM + sorted(p for p in (Path(__file__).parent / "fixtures").iterdir() if p.is_file())
@@ -254,6 +259,31 @@ def test_section_contains(pair):
             assert mine.contains_offset(offset) == ref.contains_offset(offset), (mine.Name, hex(offset))
 
 
+@pytest.mark.parametrize("value", [2**64, 2**70, -(2**64)])
+def test_addresses_beyond_64_bits_follow_pefile(pair, value):
+    ours, theirs = pair
+    for method in ("get_data", "get_offset_from_rva", "get_rva_from_offset"):
+        mine, ref = outcome(getattr(ours, method), value), outcome(getattr(theirs, method), value)
+        assert mine == ref, method
+    assert ours.get_data(0x40, value) == theirs.get_data(0x40, value)
+    for method in ("get_section_by_rva", "get_section_by_offset"):
+        assert getattr(ours, method)(value) is getattr(theirs, method)(value) is None, method
+    for mine, ref in zip(ours.sections, theirs.sections):
+        assert mine.get_data(value) == ref.get_data(value), mine.Name
+        va = ref.VirtualAddress
+        assert mine.get_data(va, value) == ref.get_data(va, value), mine.Name
+        for method in ("contains_rva", "contains", "contains_offset"):
+            assert getattr(mine, method)(value) == getattr(ref, method)(value), (mine.Name, method)
+        for method in ("get_offset_from_rva", "get_rva_from_offset"):
+            assert getattr(mine, method)(value) == getattr(ref, method)(value), (mine.Name, method)
+
+
+@pytest.mark.parametrize("rva, length", [(-5, 10), (-5, None), (-16, 8), (-1, 1)])
+def test_negative_rvas_slice_the_header_like_pefile(pair, rva, length):
+    ours, theirs = pair
+    assert ours.get_data(rva, length) == theirs.get_data(rva, length)
+
+
 def test_overlay(pair):
     ours, theirs = pair
     assert ours.get_overlay_data_start_offset() == theirs.get_overlay_data_start_offset()
@@ -399,11 +429,39 @@ def test_corpus_has_rich_headers():
     assert any(peoxide.PE(str(p)).RICH_HEADER for p in CORPUS)
 
 
-def relocations(pe):
+MISSING = "missing"
+RELOCATION_ENTRY_FIELDS = [
+    "Data",
+    "PageRelativeOffset",
+    "IndirectCall",
+    "IATIndex",
+    "RexWPrefix",
+    "CfgCheck",
+    "Reserved",
+    "RegisterNumber",
+]
+
+
+def fields(struct, names):
+    return [getattr(struct, name, MISSING) for name in names]
+
+
+def relocation_blocks(blocks):
     return [
-        (b.struct.VirtualAddress, b.struct.SizeOfBlock, [(e.type, e.rva, e.base_rva) for e in b.entries])
-        for b in getattr(pe, "DIRECTORY_ENTRY_BASERELOC", [])
+        (
+            b.struct.VirtualAddress,
+            b.struct.SizeOfBlock,
+            [
+                (getattr(e, "type", MISSING), e.rva, e.base_rva, fields(e.struct, RELOCATION_ENTRY_FIELDS))
+                for e in b.entries
+            ],
+        )
+        for b in blocks
     ]
+
+
+def relocations(pe):
+    return relocation_blocks(getattr(pe, "DIRECTORY_ENTRY_BASERELOC", []))
 
 
 def test_relocations(pair):
@@ -507,6 +565,79 @@ def test_entries_share_and_chain_the_same_objects():
     assert entries is pe.DIRECTORY_ENTRY_EXCEPTION
     assert entries[0].unwindinfo is entries[1].unwindinfo
     assert entries[8].unwindinfo.get_chained_function_entry() is entries[7]
+BOUND_FIELDS = ["TimeDateStamp", "OffsetModuleName", "NumberOfModuleForwarderRefs"]
+BOUND_REF_FIELDS = ["TimeDateStamp", "OffsetModuleName", "Reserved"]
+
+
+def bound_imports(pe):
+    return [
+        (
+            [getattr(d.struct, f) for f in BOUND_FIELDS],
+            d.name,
+            [([getattr(r.struct, f) for f in BOUND_REF_FIELDS], r.name) for r in d.entries],
+        )
+        for d in getattr(pe, "DIRECTORY_ENTRY_BOUND_IMPORT", [])
+    ]
+
+
+def test_bound_imports(pair):
+    ours, theirs = pair
+    assert bound_imports(ours) == bound_imports(theirs)
+
+
+def test_corpus_has_bound_imports():
+    assert any(
+        d.entries for p in CORPUS for d in peoxide.PE(str(p)).DIRECTORY_ENTRY_BOUND_IMPORT
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["bound_huge_count.dll", "bound_bad_names.dll", "bound_name_outside.dll", "bound_truncated.dll", "bound_in_section.dll"],
+)
+def test_malformed_bound_imports_match_pefile(name):
+    path = str(Path(__file__).parent / "fixtures" / "crafted" / name)
+    assert bound_imports(peoxide.PE(path)) == bound_imports(pefile.PE(path))
+
+
+def test_bound_imports_need_fourteen_directories_like_pefile():
+    # pefile reaches the delay-import directory (13) first and stops when it is missing.
+    data = bytearray((Path(__file__).parent / "fixtures" / "bound_imports.dll").read_bytes())
+    count = peoxide.PE(data=bytes(data)).DOS_HEADER.e_lfanew + 24 + 108
+    data[count : count + 4] = (13).to_bytes(4, "little")
+    ours, theirs = peoxide.PE(data=bytes(data)), pefile.PE(data=bytes(data))
+    assert len(ours.OPTIONAL_HEADER.DATA_DIRECTORY) == len(theirs.OPTIONAL_HEADER.DATA_DIRECTORY) == 13
+    assert ours.DIRECTORY_ENTRY_BOUND_IMPORT == bound_imports(theirs) == []
+TLS_FIELDS = [
+    "StartAddressOfRawData",
+    "EndAddressOfRawData",
+    "AddressOfIndex",
+    "AddressOfCallBacks",
+    "SizeOfZeroFill",
+    "Characteristics",
+]
+
+
+def tls(pe):
+    entry = getattr(pe, "DIRECTORY_ENTRY_TLS", None)
+    return entry and [getattr(entry.struct, f) for f in TLS_FIELDS]
+
+
+def test_tls(pair):
+    ours, theirs = pair
+    assert tls(ours) == tls(theirs)
+
+
+def test_corpus_has_tls():
+    system = [peoxide.PE(str(p)) for p in SYSTEM]
+    assert {pe.OPTIONAL_HEADER.Magic for pe in system if tls(pe)} == {0x10B, 0x20B}
+
+
+@pytest.mark.parametrize("name", ["tls_size_zero.dll", "tls_outside_sections.dll"])
+def test_crafted_tls_matches_pefile(name):
+    path = str(Path(__file__).parent / "fixtures" / "crafted" / name)
+    assert tls(peoxide.PE(path)) == tls(pefile.PE(path))
+    assert tls(peoxide.PE(path))
 
 
 RESOURCE_DIR_FIELDS = ["Characteristics", "TimeDateStamp", "MajorVersion", "MinorVersion", "NumberOfNamedEntries", "NumberOfIdEntries"]
@@ -633,3 +764,76 @@ def test_exports(pair):
         return (s.name, s.ordinal, s.address, s.forwarder)
 
     assert [key(s) for s in ours.DIRECTORY_ENTRY_EXPORT.symbols] == [key(s) for s in expected]
+
+
+LOAD_CONFIG_FIELDS = [f.split(",")[1] for f in pefile.PE.__IMAGE_LOAD_CONFIG_DIRECTORY64_format__[1]]
+
+
+def dynamic_relocation(d):
+    header = (d.struct.Symbol, d.struct.BaseRelocSize, d.symbol)
+    if not hasattr(d, "func_relocs"):
+        return header, relocation_blocks(d.relocations)
+    functions = [
+        (
+            fields(f.struct, ["OriginalRva", "BDDOffset", "RvaSize", "BaseRelocSize"]),
+            f.func_rva,
+            f.override_rvas,
+            relocation_blocks(f.relocations),
+        )
+        for f in d.func_relocs
+    ]
+    return header, functions, [fields(b.struct, ["Left", "Right", "Value"]) for b in d.bdd_relocs]
+
+
+def load_config(pe):
+    """The structure's fields, `MISSING` where it stops short, and its dynamic relocations."""
+    config = getattr(pe, "DIRECTORY_ENTRY_LOAD_CONFIG", None)
+    if config is None:
+        return None
+    dynamic = config.dynamic_relocations
+    return fields(config.struct, LOAD_CONFIG_FIELDS), dynamic and [dynamic_relocation(d) for d in dynamic]
+
+
+def test_load_config(pair):
+    ours, theirs = pair
+    assert load_config(ours) == load_config(theirs)
+
+
+def dynamic_symbols(pe):
+    config = pe.DIRECTORY_ENTRY_LOAD_CONFIG
+    return {d.symbol for d in (config and config.dynamic_relocations or [])}
+
+
+def test_corpus_has_load_config():
+    configs = [load_config(peoxide.PE(str(p))) for p in CORPUS]
+    assert any(c and MISSING not in c[0] for c in configs)
+
+
+def test_corpus_has_dynamic_relocations():
+    symbols = set().union(*(dynamic_symbols(peoxide.PE(str(p))) for p in CORPUS))
+    assert {3, 4, 5, 6, 7} <= symbols and max(symbols) > 2**32
+
+
+KERNEL_IMAGES = [WINDIR / "System32" / name for name in ("ntoskrnl.exe", "win32kfull.sys")]
+
+
+@pytest.mark.parametrize("path", [p for p in KERNEL_IMAGES if p.exists()], ids=lambda p: p.name)
+def test_kernel_dynamic_relocations(path):
+    """Kernel images hold the most dynamic relocations, often in the bitfield formats."""
+    theirs = pefile.PE(str(path), fast_load=True)
+    theirs.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG"]])
+    ours = peoxide.PE(str(path))
+    assert dynamic_symbols(ours)
+    assert load_config(ours) == load_config(theirs)
+
+
+CRAFTED = Path(__file__).parent / "fixtures" / "crafted"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["load_config_short_size.dll", "load_config_odd_size.dll", "load_config_long_table.dll"],
+)
+def test_crafted_load_config_matches_pefile(name):
+    path = str(CRAFTED / name)
+    assert load_config(peoxide.PE(path)) == load_config(pefile.PE(path))

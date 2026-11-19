@@ -8,7 +8,10 @@ use peoxide_core::{Pe, clamp, entropy, parse};
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 
-const FIXTURES: [&[u8]; 6] = [
+const FIXTURES: [&[u8]; 9] = [
+    // Load config with every kind of dynamic relocation, in PE32+ and PE32.
+    include_bytes!("../../tests/fixtures/load_config64.dll"),
+    include_bytes!("../../tests/fixtures/load_config32.dll"),
     include_bytes!("../../tests/fixtures/sample64.dll"),
     include_bytes!("../../tests/fixtures/sample32.exe"),
     include_bytes!("../../tests/fixtures/driver.sys"),
@@ -17,10 +20,14 @@ const FIXTURES: [&[u8]; 6] = [
     // Every unwind code layout, then chain cycles, 255 codes and a truncated record.
     include_bytes!("../../tests/fixtures/exceptions64.dll"),
     include_bytes!("../../tests/fixtures/crafted/exceptions.dll"),
+    // The only seed with bound imports.
+    include_bytes!("../../tests/fixtures/bound_imports.dll"),
 ];
 /// Share of edits aimed at the headers, section table and data directories.
 const HOT_EDIT_SHARE: f64 = 0.7;
 const TRUNCATE_SHARE: f64 = 0.25;
+/// Bytes of a fixture's dynamic relocation table that edits aim at.
+const DYNAMIC_RELOCATION_TABLE_SPAN: i64 = 0x100;
 /// Most bytes one case overwrites.
 const MAX_EDITS: usize = 32;
 
@@ -43,8 +50,17 @@ fn hot_regions(data: &[u8]) -> Vec<Range<usize>> {
         .data_directory
         .iter()
         .filter_map(|d| pe.data_range(d.virtual_address as i64, Some(d.size as i64)));
+    // The load config reaches its dynamic relocation table by section and offset instead.
+    let dynamic_relocations = pe.parse_load_config(data).and_then(|config| {
+        let field = |name| config.fields.iter().find(|f| f.0 == name).map(|f| f.1);
+        let section = field("DynamicValueRelocTableSection")?.checked_sub(1)?;
+        let offset = field("DynamicValueRelocTableOffset")?;
+        let rva = pe.sections.get(section as usize)?.virtual_address as i64 + offset as i64;
+        pe.data_range(rva, Some(DYNAMIC_RELOCATION_TABLE_SPAN))
+    });
     std::iter::once(headers)
         .chain(directories)
+        .chain(dynamic_relocations)
         .filter(|range| !range.is_empty())
         .collect()
 }
@@ -84,6 +100,8 @@ fn exercise(pe: &Pe, data: &[u8]) {
             );
         }
     }
+    let _ = pe.parse_load_config(data);
+    let _ = pe.parse_bound_imports(data);
     let _ = pe.checksum(data);
     let rva = i64::from(pe.headers.optional_header.address_of_entry_point);
     let _ = (

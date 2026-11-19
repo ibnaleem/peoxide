@@ -2,6 +2,7 @@
 //! Version information is decoded from the finished tree in `version.rs`.
 
 use crate::Pe;
+use crate::budget::ByteBudget;
 
 const RESOURCE_DIRECTORY: usize = 2;
 const DIRECTORY_HEADER_SIZE: i64 = 16;
@@ -10,6 +11,9 @@ const DATA_ENTRY_SIZE: i64 = 16;
 const MAX_DEPTH: usize = 32;
 const MAX_ENTRIES_PER_DIRECTORY: usize = 4096;
 const MAX_ENTRIES: usize = 0x8000;
+/// UTF-16 name bytes one tree may read. Entries may share one long name, so without this a
+/// small file can make gigabytes of names.
+const MAX_NAME_BYTES: usize = 4 << 20;
 const FIRST_STRING_READ: i64 = 256;
 const RT_STRING: u32 = 6;
 const STRINGS_PER_BLOCK: i64 = 16;
@@ -109,6 +113,7 @@ struct Walk<'a> {
     data: &'a [u8],
     base: i64,
     total_entries: usize,
+    names: ByteBudget,
 }
 
 impl Walk<'_> {
@@ -200,6 +205,9 @@ impl Walk<'_> {
                     }
                     break;
                 }
+                if !self.names.take(2 * length as usize) {
+                    break;
+                }
                 last_name = Some((start, start + length as i64, directory.entries.len()));
                 name = Some(self.string_at(start + 2, length));
             }
@@ -283,7 +291,29 @@ impl Pe {
             data,
             base,
             total_entries: 0,
+            names: ByteBudget::new(MAX_NAME_BYTES),
         };
         walk.directory(base, 0, &mut vec![base])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_sharing_one_string_stay_within_the_name_budget() {
+        // 40 entries name the same 65,535-unit string: 5 MiB of UTF-16 if all were read.
+        let data = include_bytes!("../../tests/fixtures/crafted/shared_resource_names.dll");
+        let root = crate::parse(data).unwrap().resources.unwrap();
+        let names: Vec<_> = root
+            .entries
+            .iter()
+            .filter_map(|e| e.name.clone()?)
+            .collect();
+        assert_eq!(names[0], vec![b'A'; 0xFFFF], "a long name is kept whole");
+        assert!(names.len() < 40, "all {} names kept", names.len());
+        let read = 2 * names.iter().map(Vec::len).sum::<usize>();
+        assert!(read <= MAX_NAME_BYTES, "{read} name bytes read");
     }
 }
