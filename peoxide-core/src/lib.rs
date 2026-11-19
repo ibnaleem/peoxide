@@ -1,6 +1,7 @@
 mod address;
 mod bound;
 pub use bound::{BoundForwarderRef, BoundImportDescriptor};
+mod budget;
 mod checksum;
 mod debug;
 pub use debug::{DebugDirectory, DebugEntry};
@@ -427,7 +428,7 @@ mod tests {
 
     #[test]
     fn crafted_fixtures_parse_without_panicking() {
-        let crafted: [&[u8]; 13] = [
+        let crafted: [&[u8]; 14] = [
             include_bytes!("../../tests/fixtures/crafted/shared_thunks.dll"),
             include_bytes!("../../tests/fixtures/crafted/shared_delay_thunks.dll"),
             include_bytes!("../../tests/fixtures/crafted/huge_count.dll"),
@@ -441,6 +442,7 @@ mod tests {
             include_bytes!("../../tests/fixtures/crafted/bound_truncated.dll"),
             include_bytes!("../../tests/fixtures/crafted/bound_in_section.dll"),
             include_bytes!("../../tests/fixtures/crafted/bound_shared_names.dll"),
+            include_bytes!("../../tests/fixtures/crafted/overlapping_version.dll"),
         ];
         // Ok or Err are both fine; only a panic fails.
         for data in crafted {
